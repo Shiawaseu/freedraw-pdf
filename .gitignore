@@ -1,0 +1,20 @@
+node_modules/
+obsidian/
+.agents/
+.codex/
+dist/
+pdf drawing test/
+main.js
+*.zip
+*.pdf
+*.bak
+*.annot.json
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+*.log
+.env
+.DS_Store
+Thumbs.db

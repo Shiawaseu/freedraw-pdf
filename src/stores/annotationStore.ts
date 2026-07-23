@@ -1,0 +1,308 @@
+import { App, Notice, TFile } from "obsidian";
+import { ANNOTATION_FILE_SUFFIX } from "../config";
+import { getAnnotationRenderables } from "../annotation/renderOrder";
+import { generateId } from "../utils/general";
+import type { AnnotationDocument, AnnotationLoadInfo, ImageAnnotation, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
+
+const DEFAULT_STROKE_REFERENCE_WIDTH = 1524;
+const MAX_STROKE_WIDTH_SCALE = 0.08;
+const MAX_TEXT_FONT_SCALE = 0.08;
+const SCALE_DRIFT_TOLERANCE = 2.25;
+
+function getStableScale(width: number, maxScale: number, minScale: number): number {
+	return Math.min(maxScale, Math.max(minScale, width / DEFAULT_STROKE_REFERENCE_WIDTH));
+}
+
+function isUsableStoredScale(width: number, scale: number | undefined, maxScale: number, minScale: number): boolean {
+	if (scale === undefined || !Number.isFinite(scale) || scale <= 0 || scale > maxScale) {
+		return false;
+	}
+	const fallback = getStableScale(width, maxScale, minScale);
+	return scale <= fallback * SCALE_DRIFT_TOLERANCE;
+}
+
+export function getPdfIdentity(file: TFile): AnnotationDocument["sourcePdf"] {
+	return {
+		path: file.path,
+		name: file.name,
+		basename: file.basename,
+		size: file.stat.size,
+		ctime: file.stat.ctime,
+		mtime: file.stat.mtime
+	};
+}
+
+export function createEmptyDocument(file: TFile): AnnotationDocument {
+	return {
+		version: 6,
+		sourceFile: file.path,
+		sourcePdf: getPdfIdentity(file),
+		updatedAt: new Date().toISOString(),
+		strokes: [],
+		textItems: [],
+		shapes: [],
+		imageItems: [],
+		pdfPageTemplates: [],
+		appendedPages: [],
+		deletedPdfPages: []
+	};
+}
+
+export function cloneDocument(document: AnnotationDocument): AnnotationDocument {
+	return JSON.parse(JSON.stringify(document)) as AnnotationDocument;
+}
+
+export function normalizeAnnotationZIndexes(strokes: StrokeAnnotation[], textItems: TextAnnotation[], shapes: ShapeAnnotation[]): boolean {
+	let changed = false;
+	getAnnotationRenderables(strokes, textItems, shapes).forEach((renderable, index) => {
+		if (renderable.annotation.zIndex !== index) {
+			renderable.annotation.zIndex = index;
+			changed = true;
+		}
+	});
+	return changed;
+}
+
+export function normalizeDocumentZIndexes(document: AnnotationDocument): boolean {
+	const pages = new Set<number>([
+		...document.strokes.map((stroke) => stroke.page),
+		...document.textItems.map((item) => item.page),
+		...document.shapes.map((shape) => shape.page)
+	]);
+	let changed = false;
+	for (const page of pages) {
+		const pageChanged = normalizeAnnotationZIndexes(
+			document.strokes.filter((stroke) => stroke.page === page),
+			document.textItems.filter((item) => item.page === page),
+			document.shapes.filter((shape) => shape.page === page)
+		);
+		changed = changed || pageChanged;
+	}
+	return changed;
+}
+
+export function normalizeDocumentStrokeScales(document: AnnotationDocument): boolean {
+	let changed = false;
+	for (const stroke of document.strokes) {
+		if (!isUsableStoredScale(stroke.width, stroke.widthScale, MAX_STROKE_WIDTH_SCALE, 0.0005)) {
+			stroke.widthScale = getStableScale(stroke.width, MAX_STROKE_WIDTH_SCALE, 0.0005);
+			changed = true;
+		}
+	}
+	for (const shape of document.shapes) {
+		if (!isUsableStoredScale(shape.width, shape.widthScale, MAX_STROKE_WIDTH_SCALE, 0.0005)) {
+			shape.widthScale = getStableScale(shape.width, MAX_STROKE_WIDTH_SCALE, 0.0005);
+			changed = true;
+		}
+	}
+	for (const textItem of document.textItems) {
+		if (!isUsableStoredScale(textItem.fontSize, textItem.fontScale, MAX_TEXT_FONT_SCALE, 0.004)) {
+			textItem.fontScale = getStableScale(textItem.fontSize, MAX_TEXT_FONT_SCALE, 0.004);
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+export class AnnotationStore {
+	constructor(private readonly app: App) {}
+
+	getSidecarPath(file: TFile): string {
+		return `${file.path}${ANNOTATION_FILE_SUFFIX}`;
+	}
+
+	async load(file: TFile): Promise<AnnotationDocument> {
+		return (await this.loadWithInfo(file)).document;
+	}
+
+	async loadWithInfo(file: TFile): Promise<AnnotationLoadInfo> {
+		const expectedSidecarPath = this.getSidecarPath(file);
+		let path = this.getSidecarPath(file);
+		let exists = await this.app.vault.adapter.exists(path);
+		if (!exists) {
+			const candidatePath = await this.findRenameCandidateSidecarPath(file);
+			if (candidatePath) {
+				path = candidatePath;
+				exists = true;
+				new Notice(`Found annotation data for ${file.name}; using ${candidatePath}.`);
+			}
+		}
+		if (!exists) {
+			return {
+				document: createEmptyDocument(file),
+				sidecarPath: null,
+				expectedSidecarPath,
+				recoveredFromDifferentPath: false,
+				sourcePathMismatch: false
+			};
+		}
+
+		try {
+			const raw = await this.app.vault.adapter.read(path);
+			const parsed = JSON.parse(raw) as Partial<AnnotationDocument>;
+			const sourcePdfPath = typeof parsed.sourcePdf?.path === "string" ? parsed.sourcePdf.path : parsed.sourceFile;
+			const document: AnnotationDocument = {
+				version: Math.max(6, parsed.version ?? 4),
+				sourceFile: parsed.sourceFile ?? file.path,
+				sourcePdf: this.normalizeSourcePdf(parsed.sourcePdf, file),
+				updatedAt: parsed.updatedAt ?? new Date().toISOString(),
+				strokes: Array.isArray(parsed.strokes)
+					? parsed.strokes.map((stroke) => ({
+							...stroke,
+							page: (stroke as Partial<StrokeAnnotation>).page ?? 1
+						}))
+					: [],
+				textItems: Array.isArray(parsed.textItems)
+					? parsed.textItems.map((item) => ({
+							...item,
+							page: (item as Partial<TextAnnotation>).page ?? 1
+						}))
+					: [],
+				shapes: Array.isArray(parsed.shapes)
+					? parsed.shapes.map((shape) => ({
+							...shape,
+							page: (shape as Partial<ShapeAnnotation>).page ?? 1
+						}))
+					: [],
+				imageItems: Array.isArray(parsed.imageItems)
+					? parsed.imageItems.map((image) => ({
+							...image,
+							page: (image as Partial<ImageAnnotation>).page ?? 1,
+							x: Number.isFinite((image as Partial<ImageAnnotation>).x) ? (image as ImageAnnotation).x : 0.32,
+							y: Number.isFinite((image as Partial<ImageAnnotation>).y) ? (image as ImageAnnotation).y : 0.32,
+							widthScale: Number.isFinite((image as Partial<ImageAnnotation>).widthScale) ? (image as ImageAnnotation).widthScale : 0.36,
+							heightScale: Number.isFinite((image as Partial<ImageAnnotation>).heightScale) ? (image as ImageAnnotation).heightScale : 0.24
+						}))
+					: [],
+				pdfPageTemplates: Array.isArray(parsed.pdfPageTemplates)
+					? parsed.pdfPageTemplates.map((pageTemplate) => ({
+						page: Math.max(1, Math.round(Number(pageTemplate.page) || 1)),
+						template: pageTemplate.template ?? "ruled",
+						paperColor: pageTemplate.paperColor ?? "#fffdf7",
+						pageSize: pageTemplate.pageSize ?? "a4"
+					}))
+					: [],
+				appendedPages: Array.isArray(parsed.appendedPages)
+					? parsed.appendedPages.map((page, index) => ({
+						id: page.id ?? generateId("page"),
+						title: page.title ?? `Template ${index + 1}`,
+						kind: "template",
+						sourceLabel: "Template page",
+						insertAfterPdfPage: typeof page.insertAfterPdfPage === "number" ? page.insertAfterPdfPage : null,
+						template: page.template ?? "ruled",
+						paperColor: page.paperColor ?? "#fffdf7",
+						pageSize: page.pageSize ?? "a4",
+						strokes: [],
+						textItems: [],
+						shapes: [],
+						imageItems: []
+					}))
+					: [],
+				deletedPdfPages: Array.isArray(parsed.deletedPdfPages)
+					? Array.from(new Set(parsed.deletedPdfPages
+						.map((page) => Math.round(Number(page)))
+						.filter((page) => Number.isFinite(page) && page > 0)))
+						.sort((a, b) => a - b)
+					: []
+			};
+			return {
+				document,
+				sidecarPath: path,
+				expectedSidecarPath,
+				recoveredFromDifferentPath: path !== expectedSidecarPath,
+				sourcePathMismatch: !!sourcePdfPath && sourcePdfPath !== file.path,
+				sourcePdfPath
+			};
+		} catch (error) {
+			console.error("freedraw-pdf: failed to load sidecar", error);
+			new Notice("Could not load annotation sidecar. Starting with a blank layer.");
+			return {
+				document: createEmptyDocument(file),
+				sidecarPath: null,
+				expectedSidecarPath,
+				recoveredFromDifferentPath: false,
+				sourcePathMismatch: false
+			};
+		}
+	}
+
+	async save(file: TFile, document: AnnotationDocument): Promise<void> {
+		const path = this.getSidecarPath(file);
+		const payload = JSON.stringify(
+			{
+				...document,
+				sourceFile: file.path,
+				sourcePdf: getPdfIdentity(file),
+				updatedAt: new Date().toISOString()
+			},
+			null,
+			2
+		);
+		await this.app.vault.adapter.write(path, payload);
+	}
+
+	async relinkSidecarToFile(file: TFile, document: AnnotationDocument, sourceSidecarPath: string | null): Promise<string> {
+		const expectedSidecarPath = this.getSidecarPath(file);
+		await this.save(file, document);
+		if (sourceSidecarPath && sourceSidecarPath !== expectedSidecarPath && await this.app.vault.adapter.exists(sourceSidecarPath)) {
+			await this.app.vault.adapter.remove(sourceSidecarPath);
+		}
+		return expectedSidecarPath;
+	}
+
+	async migrateForRename(file: TFile, oldPath: string): Promise<void> {
+		const oldSidecarPath = `${oldPath}${ANNOTATION_FILE_SUFFIX}`;
+		const newSidecarPath = this.getSidecarPath(file);
+		const exists = await this.app.vault.adapter.exists(oldSidecarPath);
+		if (!exists || oldSidecarPath === newSidecarPath) {
+			return;
+		}
+		await this.app.vault.adapter.rename(oldSidecarPath, newSidecarPath);
+	}
+
+	async deleteForPdfPath(pdfPath: string): Promise<boolean> {
+		const sidecarPath = `${pdfPath}${ANNOTATION_FILE_SUFFIX}`;
+		if (!await this.app.vault.adapter.exists(sidecarPath)) {
+			return false;
+		}
+		await this.app.vault.adapter.remove(sidecarPath);
+		return true;
+	}
+
+	private normalizeSourcePdf(sourcePdf: Partial<NonNullable<AnnotationDocument["sourcePdf"]>> | undefined, file: TFile): NonNullable<AnnotationDocument["sourcePdf"]> {
+		return {
+			path: typeof sourcePdf?.path === "string" ? sourcePdf.path : file.path,
+			name: typeof sourcePdf?.name === "string" ? sourcePdf.name : file.name,
+			basename: typeof sourcePdf?.basename === "string" ? sourcePdf.basename : file.basename,
+			size: typeof sourcePdf?.size === "number" ? sourcePdf.size : file.stat.size,
+			ctime: typeof sourcePdf?.ctime === "number" ? sourcePdf.ctime : file.stat.ctime,
+			mtime: typeof sourcePdf?.mtime === "number" ? sourcePdf.mtime : file.stat.mtime
+		};
+	}
+
+	private async findRenameCandidateSidecarPath(file: TFile): Promise<string | null> {
+		const folderPath = file.parent?.path ?? "";
+		try {
+			const listed = await this.app.vault.adapter.list(folderPath);
+			const candidates: string[] = [];
+			for (const candidatePath of listed.files) {
+				if (!candidatePath.endsWith(ANNOTATION_FILE_SUFFIX) || candidatePath === this.getSidecarPath(file)) {
+					continue;
+				}
+				try {
+					const raw = await this.app.vault.adapter.read(candidatePath);
+					const parsed = JSON.parse(raw) as Partial<AnnotationDocument>;
+					if (parsed.sourcePdf?.size === file.stat.size) {
+						candidates.push(candidatePath);
+					}
+				} catch {
+					// Ignore unrelated or broken sidecar files.
+				}
+			}
+			return candidates.length === 1 ? candidates[0] : null;
+		} catch (error) {
+			console.warn("freedraw-pdf: failed to scan for renamed sidecar", error);
+			return null;
+		}
+	}
+}
