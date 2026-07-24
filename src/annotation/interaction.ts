@@ -19,7 +19,7 @@ export function getSelectionBoxPoints(start: AnnotationPoint, end: AnnotationPoi
 }
 
 export function parseRegionReference(raw: string): RegionReference | null {
-	const match = raw.match(/\[\[([^\]#]+)#page=(\d+)\]\]\s*::region\[page=(\d+);rect=([0-9.\-]+),([0-9.\-]+),([0-9.\-]+),([0-9.\-]+)\]/i);
+	const match = raw.match(/\[\[([^\]#]+)#page=(\d+)]]\s*::region\[page=(\d+);rect=([0-9.-]+),([0-9.-]+),([0-9.-]+),([0-9.-]+)]/i);
 	if (!match) {
 		return null;
 	}

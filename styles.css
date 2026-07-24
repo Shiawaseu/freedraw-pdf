@@ -15,7 +15,8 @@
 }
 
 .pdf-native-annotator-ui.is-inline {
-	position: static;
+	position: relative;
+	z-index: 10000;
 	display: inline-flex;
 	align-items: center;
 	gap: 8px;

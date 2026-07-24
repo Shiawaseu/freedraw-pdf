@@ -34,7 +34,6 @@ export class AnnotatedEmbedController {
 		try {
 			await this.host.writeClipboardText(block);
 			new Notice(rect ? `Copied annotated region embed for ${file.name} page ${page}.` : `Copied annotated embed for ${file.name} page ${page}.`);
-			console.info("freedraw-pdf: copied annotated embed block", block);
 		} catch (error) {
 			console.error("freedraw-pdf: failed to copy annotated embed block", error);
 			new Notice(`Copy failed. Embed block: ${block}`);
@@ -98,8 +97,10 @@ export class AnnotatedEmbedController {
 					}
 					body.empty();
 					canvas.className = "freedraw-pdf-markdown-embed-canvas";
-					canvas.style.maxWidth = "100%";
-					canvas.style.height = "auto";
+					canvas.setCssStyles({
+						maxWidth: "100%",
+						height: "auto"
+					});
 					body.appendChild(canvas);
 				})
 				.catch((error) => {
@@ -274,7 +275,7 @@ export class AnnotatedEmbedController {
 			this.renderCache.set(cacheKey, cloneCanvas(outputCanvas));
 			return outputCanvas;
 		} finally {
-			loadingTask.destroy();
+			await loadingTask.destroy();
 		}
 	}
 }

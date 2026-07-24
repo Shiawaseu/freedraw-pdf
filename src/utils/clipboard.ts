@@ -12,9 +12,11 @@ export async function writeClipboardText(text: string): Promise<void> {
 	}
 	const textarea = document.createElement("textarea");
 	textarea.value = text;
-	textarea.style.position = "fixed";
-	textarea.style.left = "-10000px";
-	textarea.style.top = "0";
+	textarea.setCssStyles({
+		position: "fixed",
+		left: "-10000px",
+		top: "0"
+	});
 	document.body.appendChild(textarea);
 	textarea.focus();
 	textarea.select();
@@ -25,4 +27,12 @@ export async function writeClipboardText(text: string): Promise<void> {
 	} finally {
 		textarea.remove();
 	}
+}
+
+export async function readClipboardText(): Promise<string> {
+	const electronClipboard = (window as unknown as { require?: (moduleName: string) => { clipboard?: { readText?: () => string } } }).require?.("electron")?.clipboard;
+	if (electronClipboard?.readText) {
+		return electronClipboard.readText();
+	}
+	return navigator.clipboard.readText();
 }

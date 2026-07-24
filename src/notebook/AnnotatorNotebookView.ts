@@ -10,6 +10,7 @@ import { LRUCache } from "../utils/lruCache";
 import { MAX_HISTORY, NOTEBOOK_VIEW_TYPE, PAPER_COLOR_PRESETS, TEXT_COLOR_PRESETS, TEXT_FONT_FAMILIES, TEXT_FONT_SIZES } from "../config";
 import { NotebookStore, cloneNotebookDocument, normalizeNotebookZIndexes } from "../stores/notebookStore";
 import { dataUrlToArrayBuffer, clamp, generateId, getBaseName } from "../utils/general";
+import { writeClipboardText } from "../utils/clipboard";
 import { createPdfBackedNotebookPage, createTemplateNotebookPage, getNotebookPageKindLabel, getNotebookPageSizeDimensions, getNotebookPageSizeLabel, getNotebookPageSourceSummary, getNotebookTemplateLabel } from "./pageModel";
 import { drawTemplatePageBackground } from "./templateCanvas";
 import { getNativePdfJs } from "../pdf/nativePdfJs";
@@ -20,6 +21,23 @@ import type { AnnotationClipboardPayload, AnnotationPoint, AnnotationTool, Erase
 
 interface NotebookPdfSessionBridge {
 	focusRegion(page: number, rect: RegionReference["rect"]): void;
+}
+
+function isDomNode(value: unknown): value is Node {
+	const candidate = value as { instanceOf?: <T>(type: { new (): T }) => boolean } | null;
+	return typeof candidate?.instanceOf === "function" && candidate.instanceOf(Node);
+}
+
+function isHtmlElement(value: unknown): value is HTMLElement {
+	return isDomNode(value) && value.instanceOf(HTMLElement);
+}
+
+function isHtmlDivElement(value: unknown): value is HTMLDivElement {
+	return isDomNode(value) && value.instanceOf(HTMLDivElement);
+}
+
+function isHtmlCanvasElement(value: unknown): value is HTMLCanvasElement {
+	return isDomNode(value) && value.instanceOf(HTMLCanvasElement);
 }
 
 export interface AnnotatorNotebookPluginBridge {
@@ -449,7 +467,8 @@ export class AnnotatorNotebookView extends FileView {
 		this.toolState.setColor(color);
 		this.persistToolDefaults();
 		if (this.notebookInlineTextEditorEl) {
-			this.notebookInlineTextEditorEl.style.color = color;
+			this.notebookInlineTextEditorEl.dataset.textColor = color;
+			this.notebookInlineTextEditorEl.setCssStyles({ color });
 		}
 		this.renderNotebookToolbar();
 	}
@@ -559,11 +578,15 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		editor.wrap = "soft";
 		editor.placeholder = "Type text";
-		editor.style.left = `${layout.left}px`;
-		editor.style.top = `${layout.top}px`;
-		editor.style.width = `${layout.width}px`;
-		editor.style.color = existingItem?.color ?? this.currentTextColor;
-		editor.style.fontSize = `${baseFontSize}px`;
+		editor.dataset.textColor = existingItem?.color ?? this.currentTextColor;
+		editor.dataset.fontSize = String(baseFontSize);
+		editor.setCssStyles({
+			left: `${layout.left}px`,
+			top: `${layout.top}px`,
+			width: `${layout.width}px`,
+			color: existingItem?.color ?? this.currentTextColor,
+			fontSize: `${baseFontSize}px`
+		});
 		context.surfaceEl.appendChild(editor);
 		this.notebookInlineTextEditorEl = editor;
 		this.notebookInlineTextTargetId = existingItem?.id ?? null;
@@ -630,13 +653,13 @@ export class AnnotatorNotebookView extends FileView {
 				existing.text = value;
 				existing.x = point.x;
 				existing.y = point.y;
-				existing.color = editor?.style.color || existing.color || this.currentTextColor;
+				existing.color = editor?.dataset.textColor || existing.color || this.currentTextColor;
 				existing.boxWidthScale = editorRect ? editorRect.width / Math.max(context.width, 1) : existing.boxWidthScale;
 				this.selectedTarget = { kind: "text", id: existing.id, page: 1 };
 				this.selectedTargets = [this.selectedTarget];
 			}
 		} else if (value.trim()) {
-			const fontSize = editor ? parseFloat(editor.style.fontSize) || 18 : 18;
+			const fontSize = editor ? parseFloat(editor.dataset.fontSize ?? "") || 18 : 18;
 			const nextText: TextAnnotation = {
 				id: generateId("text"),
 				page: 1,
@@ -672,12 +695,12 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		window.requestAnimationFrame(() => {
 			const activeItem = this.contentEl.querySelector(".annotator-notebook-page-item.is-active");
-			if (activeItem instanceof HTMLElement) {
+			if (isHtmlElement(activeItem)) {
 				activeItem.scrollIntoView({ block: "nearest" });
 			}
 			const selector = `.annotator-notebook-page[data-page-id="${pageId}"]`;
 			const pageEl = this.contentEl.querySelector(selector) ?? this.contentEl.querySelector(".annotator-notebook-page");
-			if (pageEl instanceof HTMLElement) {
+			if (isHtmlElement(pageEl)) {
 				if (this.notebookFlowMode === "continuous") {
 					pageEl.scrollIntoView({ block: "nearest" });
 				} else if (this.notebookFlowMode === "paged") {
@@ -911,7 +934,7 @@ export class AnnotatorNotebookView extends FileView {
 			await pdfDocument.destroy();
 			return canvas;
 		} finally {
-			loadingTask.destroy();
+			await loadingTask.destroy();
 		}
 	}
 
@@ -959,8 +982,10 @@ export class AnnotatorNotebookView extends FileView {
 		for (const canvasEl of [context.backgroundEl, context.committedEl, context.overlayEl]) {
 			canvasEl.width = Math.max(1, Math.round(context.width * ratio));
 			canvasEl.height = Math.max(1, Math.round(context.height * ratio));
-			canvasEl.style.width = `${context.width}px`;
-			canvasEl.style.height = `${context.height}px`;
+			canvasEl.setCssStyles({
+				width: `${context.width}px`,
+				height: `${context.height}px`
+			});
 		}
 		this.renderNotebookBackgroundLayer();
 		this.drawNotebookPage();
@@ -1037,7 +1062,7 @@ export class AnnotatorNotebookView extends FileView {
 			let bestDistance = Number.POSITIVE_INFINITY;
 			const pageElements = viewport.querySelectorAll(".annotator-notebook-page");
 			pageElements.forEach((pageNode) => {
-				if (!(pageNode instanceof HTMLDivElement)) {
+				if (!isHtmlDivElement(pageNode)) {
 					return;
 				}
 				const rect = pageNode.getBoundingClientRect();
@@ -1049,7 +1074,7 @@ export class AnnotatorNotebookView extends FileView {
 				}
 			});
 			const pagePosition = this.contentEl.querySelector(".annotator-notebook-page-position[data-role='visible-page']");
-			if (pagePosition instanceof HTMLDivElement && bestPageId) {
+			if (isHtmlDivElement(pagePosition) && bestPageId) {
 				const index = this.document.pages.findIndex((page) => page.id === bestPageId);
 				if (index >= 0) {
 					pagePosition.textContent = this.notebookFlowMode === "paged"
@@ -1117,20 +1142,22 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		const pageElements = this.contentEl.querySelectorAll(".annotator-notebook-page");
 		pageElements.forEach((pageNode) => {
-			if (!(pageNode instanceof HTMLDivElement)) {
+			if (!isHtmlDivElement(pageNode)) {
 				return;
 			}
 			const pageId = pageNode.dataset.pageId;
 			const page = this.document?.pages.find((entry) => entry.id === pageId);
 			const pageSurface = pageNode.querySelector(".annotator-notebook-page-surface");
-			if (!page || !(pageSurface instanceof HTMLDivElement)) {
+			if (!page || !isHtmlDivElement(pageSurface)) {
 				return;
 			}
 			const base = this.getNotebookBaseDimensions(page);
 			const zoom = this.getEffectiveNotebookZoom(page);
-			pageNode.style.width = `${Math.round(base.width * zoom)}px`;
-			pageSurface.style.minHeight = `${Math.round(base.height * zoom)}px`;
-			pageSurface.style.height = `${Math.round(base.height * zoom)}px`;
+			pageNode.setCssStyles({ width: `${Math.round(base.width * zoom)}px` });
+			pageSurface.setCssStyles({
+				minHeight: `${Math.round(base.height * zoom)}px`,
+				height: `${Math.round(base.height * zoom)}px`
+			});
 		});
 	}
 
@@ -2382,7 +2409,7 @@ export class AnnotatorNotebookView extends FileView {
 			return;
 		}
 		try {
-			await navigator.clipboard.writeText(link);
+			await writeClipboardText(link);
 			new Notice("Copied source PDF link");
 		} catch {
 			new Notice("Could not copy source PDF link.");
@@ -3127,18 +3154,20 @@ export class AnnotatorNotebookView extends FileView {
 			return;
 		}
 		if (this.notebookPanAnchor) {
-			this.overlayEl.style.cursor = "grabbing";
+			this.overlayEl.setCssStyles({ cursor: "grabbing" });
 			return;
 		}
 		if (this.isNotebookPanActive()) {
-			this.overlayEl.style.cursor = "grab";
+			this.overlayEl.setCssStyles({ cursor: "grab" });
 			return;
 		}
-		this.overlayEl.style.cursor = this.currentTool === "text"
-			? "text"
-			: this.currentTool === "eraser"
-				? "cell"
-				: "crosshair";
+		this.overlayEl.setCssStyles({
+			cursor: this.currentTool === "text"
+				? "text"
+				: this.currentTool === "eraser"
+					? "cell"
+					: "crosshair"
+		});
 	}
 
 	private getNotebookToolPreviewRadius(): number {
@@ -3166,10 +3195,12 @@ export class AnnotatorNotebookView extends FileView {
 		if (active) {
 			this.notebookToolPreviewEl.classList.add("is-active");
 		}
-		this.notebookToolPreviewEl.style.width = `${size}px`;
-		this.notebookToolPreviewEl.style.height = `${size}px`;
-		this.notebookToolPreviewEl.style.left = `${clientX - rect.left - radius}px`;
-		this.notebookToolPreviewEl.style.top = `${clientY - rect.top - radius}px`;
+		this.notebookToolPreviewEl.setCssStyles({
+			width: `${size}px`,
+			height: `${size}px`,
+			left: `${clientX - rect.left - radius}px`,
+			top: `${clientY - rect.top - radius}px`
+		});
 	}
 
 	private refreshNotebookToolPreviewFromLastPointer(active = false): void {
@@ -3210,7 +3241,7 @@ export class AnnotatorNotebookView extends FileView {
 			return;
 		}
 		if (this.notebookInlineTextEditorEl) {
-			this.overlayEl.style.cursor = "text";
+			this.overlayEl.setCssStyles({ cursor: "text" });
 			return;
 		}
 		if (this.isNotebookPanActive() || this.notebookPanAnchor) {
@@ -3220,7 +3251,7 @@ export class AnnotatorNotebookView extends FileView {
 		if (this.currentTool === "select") {
 			const handle = this.getNotebookResizeHandle(point);
 			if (handle && this.selectedTargets.length > 0) {
-				this.overlayEl.style.cursor = this.getNotebookResizeCursor(handle);
+				this.overlayEl.setCssStyles({ cursor: this.getNotebookResizeCursor(handle) });
 				return;
 			}
 			const selectedHit = this.selectedTargets.find((target) => {
@@ -3230,11 +3261,11 @@ export class AnnotatorNotebookView extends FileView {
 					: false;
 			});
 			if (selectedHit) {
-				this.overlayEl.style.cursor = "move";
+				this.overlayEl.setCssStyles({ cursor: "move" });
 				return;
 			}
 			const hit = this.findNotebookSelectableTarget(point, 0.04);
-			this.overlayEl.style.cursor = hit ? "pointer" : "default";
+			this.overlayEl.setCssStyles({ cursor: hit ? "pointer" : "default" });
 			return;
 		}
 		this.refreshNotebookCursor();
@@ -3255,7 +3286,7 @@ export class AnnotatorNotebookView extends FileView {
 
 	private renderNotebookToolbar(): void {
 		const toolbar = this.contentEl.querySelector(".annotator-notebook-toolbar-tools");
-		if (!(toolbar instanceof HTMLDivElement)) {
+		if (!isHtmlDivElement(toolbar)) {
 			return;
 		}
 		if (this.overlayEl) {
@@ -3386,10 +3417,12 @@ export class AnnotatorNotebookView extends FileView {
 		button.title = `${preset.label}: ${preset.kind} ${preset.width}`;
 		const preview = document.createElement("span");
 		preview.className = "pdf-native-annotator-preset-preview";
-		preview.style.backgroundColor = preset.kind === "eraser" ? "var(--text-muted)" : preset.color;
-		preview.style.opacity = String(preset.opacity);
-		preview.style.height = `${Math.max(4, Math.min(14, preset.width))}px`;
-		preview.style.width = `${Math.max(18, Math.min(34, preset.width * 2.6))}px`;
+		preview.setCssStyles({
+			backgroundColor: preset.kind === "eraser" ? "var(--text-muted)" : preset.color,
+			opacity: String(preset.opacity),
+			height: `${Math.max(4, Math.min(14, preset.width))}px`,
+			width: `${Math.max(18, Math.min(34, preset.width * 2.6))}px`
+		});
 		button.appendChild(preview);
 		button.addEventListener("pointerdown", (event) => event.stopPropagation());
 		button.addEventListener("click", () => {
@@ -3408,7 +3441,7 @@ export class AnnotatorNotebookView extends FileView {
 		button.title = label;
 		const inner = document.createElement("span");
 		inner.className = "pdf-native-annotator-swatch-inner";
-		inner.style.backgroundColor = color;
+		inner.setCssStyles({ backgroundColor: color });
 		button.appendChild(inner);
 		button.addEventListener("pointerdown", (event) => event.stopPropagation());
 		button.addEventListener("click", () => {
@@ -3429,7 +3462,7 @@ export class AnnotatorNotebookView extends FileView {
 		button.title = "Choose color";
 		button.setAttribute("aria-label", "Choose notebook color");
 		const preview = button.createSpan({ cls: "pdf-native-annotator-color-button-preview" });
-		preview.style.backgroundColor = this.currentColor;
+		preview.setCssStyles({ backgroundColor: this.currentColor });
 		button.addEventListener("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
@@ -3461,7 +3494,7 @@ export class AnnotatorNotebookView extends FileView {
 				swatch.classList.add("is-active");
 			}
 			const inner = swatch.createSpan({ cls: "pdf-native-annotator-swatch-inner" });
-			inner.style.backgroundColor = preset.color;
+			inner.setCssStyles({ backgroundColor: preset.color });
 			swatch.addEventListener("click", () => {
 				this.applyNotebookToolbarColor(preset.color);
 				this.closeNotebookColorPopover();
@@ -3485,7 +3518,7 @@ export class AnnotatorNotebookView extends FileView {
 			this.applyNotebookToolbarColor(colorInput.value);
 			const preview = anchor.querySelector<HTMLElement>(".pdf-native-annotator-color-button-preview");
 			if (preview) {
-				preview.style.backgroundColor = colorInput.value;
+				preview.setCssStyles({ backgroundColor: colorInput.value });
 			}
 			this.drawNotebookPage();
 		});
@@ -3541,14 +3574,14 @@ export class AnnotatorNotebookView extends FileView {
 		title.appendChild(this.createNotebookPopoverCloseButton(() => this.closeNotebookStrokePopover()));
 		const previewWrap = popover.createDiv({ cls: "pdf-native-annotator-stroke-popover-preview" });
 		const previewLine = previewWrap.createSpan({ cls: "pdf-native-annotator-stroke-popover-preview-line" });
-		previewLine.style.setProperty("--stroke-preview-size", `${initialWidth}px`);
+		previewLine.setCssProps({ "--stroke-preview-size": `${initialWidth}px` });
 		if (targetTool === "highlighter") {
 			previewWrap.classList.add("is-highlighter");
-			previewLine.style.backgroundColor = this.currentColor;
+			previewLine.setCssStyles({ backgroundColor: this.currentColor });
 		} else if (targetTool === "eraser") {
 			previewWrap.classList.add("is-eraser");
 		} else {
-			previewLine.style.backgroundColor = this.currentColor;
+			previewLine.setCssStyles({ backgroundColor: this.currentColor });
 		}
 		const body = popover.createDiv({ cls: "pdf-native-annotator-stroke-popover-body" });
 		const valueLabel = body.createSpan({ cls: "pdf-native-annotator-stroke-popover-value", text: `${initialWidth.toFixed(1)} px` });
@@ -3569,7 +3602,7 @@ export class AnnotatorNotebookView extends FileView {
 			}
 			const width = Number(slider.value);
 			valueLabel.textContent = `${width.toFixed(1)} px`;
-			previewLine.style.setProperty("--stroke-preview-size", `${width}px`);
+			previewLine.setCssProps({ "--stroke-preview-size": `${width}px` });
 			this.applyNotebookToolbarWidth(width, targetTool);
 			const strokeValue = anchor.querySelector<HTMLElement>(".pdf-native-annotator-stroke-value");
 			if (strokeValue) {
@@ -3637,8 +3670,10 @@ export class AnnotatorNotebookView extends FileView {
 		const popoverRect = popover.getBoundingClientRect();
 		const left = clamp(anchorRect.left + (anchorRect.width / 2) - (popoverRect.width / 2), 12, window.innerWidth - popoverRect.width - 12);
 		const top = clamp(anchorRect.bottom + 10, 12, window.innerHeight - popoverRect.height - 12);
-		popover.style.left = `${left}px`;
-		popover.style.top = `${top}px`;
+		popover.setCssStyles({
+			left: `${left}px`,
+			top: `${top}px`
+		});
 	}
 
 	private readonly scheduleNotebookPopoverReposition = (): void => {
@@ -3919,7 +3954,7 @@ export class AnnotatorNotebookView extends FileView {
 			cls: `annotator-notebook-page annotator-notebook-template-${page.template} annotator-notebook-page-size-${page.pageSize}`
 		});
 		pageCanvas.dataset.pageId = page.id;
-		pageCanvas.style.backgroundColor = page.paperColor;
+		pageCanvas.setCssStyles({ backgroundColor: page.paperColor });
 		if (page.id === this.activePageId) {
 			pageCanvas.addClass("is-active-page");
 		}
@@ -4149,12 +4184,12 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		const staticCanvases = this.contentEl.querySelectorAll(".annotator-notebook-static-canvas");
 		staticCanvases.forEach((canvasNode) => {
-			if (!(canvasNode instanceof HTMLCanvasElement)) {
+			if (!isHtmlCanvasElement(canvasNode)) {
 				return;
 			}
 			const surfaceEl = canvasNode.parentElement;
 			const pageId = surfaceEl?.dataset.pageId;
-			if (!(surfaceEl instanceof HTMLDivElement) || !pageId) {
+			if (!isHtmlDivElement(surfaceEl) || !pageId) {
 				return;
 			}
 			const page = this.document?.pages.find((entry) => entry.id === pageId);
@@ -4170,8 +4205,10 @@ export class AnnotatorNotebookView extends FileView {
 			const ratio = window.devicePixelRatio || 1;
 			canvasNode.width = Math.max(1, Math.round(width * ratio));
 			canvasNode.height = Math.max(1, Math.round(height * ratio));
-			canvasNode.style.width = `${width}px`;
-			canvasNode.style.height = `${height}px`;
+			canvasNode.setCssStyles({
+				width: `${width}px`,
+				height: `${height}px`
+			});
 			const context = canvasNode.getContext("2d");
 			if (!context) {
 				return;
@@ -4291,9 +4328,11 @@ export class AnnotatorNotebookView extends FileView {
 			});
 			const info = item.createDiv({ cls: "annotator-notebook-page-info" });
 			const thumb = info.createDiv({ cls: "annotator-notebook-page-thumb" });
-			thumb.style.backgroundImage = `url("${this.renderNotebookThumbnailDataUrl(page)}")`;
-			thumb.style.backgroundSize = "cover";
-			thumb.style.backgroundPosition = "center";
+			thumb.setCssStyles({
+				backgroundImage: `url("${this.renderNotebookThumbnailDataUrl(page)}")`,
+				backgroundSize: "cover",
+				backgroundPosition: "center"
+			});
 			thumb.createDiv({ cls: "annotator-notebook-page-thumb-index", text: String(index + 1) });
 			info.createDiv({ cls: "annotator-notebook-page-title", text: page.title });
 			info.createDiv({ cls: "annotator-notebook-page-meta", text: this.getNotebookPageMetaText(page) });
@@ -4763,7 +4802,7 @@ export class AnnotatorNotebookView extends FileView {
 				swatch.classList.add("is-active");
 			}
 			const inner = swatch.createSpan({ cls: "pdf-native-annotator-swatch-inner" });
-			inner.style.backgroundColor = preset.color;
+			inner.setCssStyles({ backgroundColor: preset.color });
 			swatch.addEventListener("click", () => {
 				void this.commitNotebookPagePaperColor(pageId, preset.color);
 			});
@@ -4831,8 +4870,10 @@ export class AnnotatorNotebookView extends FileView {
 		const hostRect = this.contentEl.getBoundingClientRect();
 		const preferredLeft = hostRect.left + (hostRect.width / 2) - (rect.width / 2);
 		const preferredTop = Math.max(hostRect.top + 88, 24);
-		popover.style.left = `${clamp(preferredLeft, 12, window.innerWidth - rect.width - 12)}px`;
-		popover.style.top = `${clamp(preferredTop, 12, window.innerHeight - rect.height - 12)}px`;
+		popover.setCssStyles({
+			left: `${clamp(preferredLeft, 12, window.innerWidth - rect.width - 12)}px`,
+			top: `${clamp(preferredTop, 12, window.innerHeight - rect.height - 12)}px`
+		});
 	}
 
 	private createNotebookPopoverCloseButton(onClick: () => void): HTMLButtonElement {

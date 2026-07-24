@@ -40,7 +40,7 @@ assertContains("src/settings/settingTab.ts", settingTabTs, "Allow touch drawing"
 assertContains("main.ts", mainTs, "getInkInputPolicy(): InkInputPolicy", "plugin/session must expose policy accessors");
 assertContains("main.ts", mainTs, "this.getInkInputPolicy() === \"allow-touch\" ? \"none\" : \"pan-x pan-y\"", "overlay must preserve touch scrolling outside touch fallback mode");
 assertContains("main.ts", mainTs, "shouldIgnoreInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())", "native PDF pointer handling must pass the policy");
-assertContains("main.ts", mainTs, "canvas.style.touchAction = \"none\"", "accepted ink pointers must disable browser gesture handling while drawing");
+assertContains("main.ts", mainTs, "canvas.setCssStyles({ touchAction: \"none\" })", "accepted ink pointers must disable browser gesture handling while drawing");
 
 assertContains("package.json", JSON.stringify(packageJson.scripts), "check:input", "package scripts must expose this verifier");
 

@@ -29,7 +29,7 @@ import { NotebookStore, cloneNotebookDocument, createEmptyNotebookDocument, norm
 import { AnnotatedEmbedController } from "./src/markdown/annotatedEmbedController";
 import { findScrollParent, getOverlayHost } from "./src/pdf/pdfDom";
 import { dataUrlToArrayBuffer, clamp, generateId, getBaseName } from "./src/utils/general";
-import { writeClipboardText } from "./src/utils/clipboard";
+import { readClipboardText, writeClipboardText } from "./src/utils/clipboard";
 import { createPdfBackedNotebookPage, createTemplateNotebookPage, getNotebookPageKindLabel, getNotebookPageRenderDimensions, getNotebookPageSizeDimensions, getNotebookPageSizeLabel, getNotebookPageSourceSummary, getNotebookTemplateLabel } from "./src/notebook/pageModel";
 import { createTemplatePageBackgroundDataUrl, drawTemplatePageBackground } from "./src/notebook/templateCanvas";
 import { getCoalescedPointerEvents, isInkDrawingTool, resolvePointerPressure, shouldIgnoreInkPointerEvent } from "./src/pointer/pointerInput";
@@ -93,6 +93,23 @@ const MAX_STROKE_WIDTH_SCALE = 0.08;
 const MAX_TEXT_FONT_SCALE = 0.08;
 const SCALE_DRIFT_TOLERANCE = 2.25;
 const BLANK_PDF_EXPORT_WIDTH_PX = 1600;
+
+function isDomNode(value: unknown): value is Node {
+	const candidate = value as { instanceOf?: <T>(type: { new (): T }) => boolean } | null;
+	return typeof candidate?.instanceOf === "function" && candidate.instanceOf(Node);
+}
+
+function isDomElement(value: unknown): value is Element {
+	return isDomNode(value) && value.instanceOf(Element);
+}
+
+function isHtmlElement(value: unknown): value is HTMLElement {
+	return isDomNode(value) && value.instanceOf(HTMLElement);
+}
+
+function isHtmlCanvasElement(value: unknown): value is HTMLCanvasElement {
+	return isDomNode(value) && value.instanceOf(HTMLCanvasElement);
+}
 
 interface BlankAnnotatablePdfOptions {
 	title: string;
@@ -394,12 +411,14 @@ class NativePdfAnnotatorSession {
 	private inlineTextPageNumber: number | null = null;
 	private toolPreviewEl: HTMLDivElement | null = null;
 	private mutationObserver: MutationObserver | null = null;
+	private viewResizeObserver: ResizeObserver | null = null;
 	private syncHandle: number | null = null;
 	private scrollHandle: number | null = null;
 	private scrollIdleHandle: number | null = null;
 	private redrawHandle: number | null = null;
 	private interactionRedrawHandle: number | null = null;
 	private popoverRepositionHandle: number | null = null;
+	private layoutRefreshHandles: number[] = [];
 	private zoomSettleHandle: number | null = null;
 	private autosaveHandle: number | null = null;
 	private statusResetHandle: number | null = null;
@@ -487,6 +506,17 @@ class NativePdfAnnotatorSession {
 		this.mountUi();
 		this.applyOverlayMode();
 		this.refreshToolbar();
+	}
+
+	refreshLayout(): void {
+		this.commitActiveInkBeforeLayoutRefresh();
+		this.scheduleLayoutRefresh();
+	}
+
+	async refreshLayoutAndFlush(): Promise<void> {
+		this.commitActiveInkBeforeLayoutRefresh();
+		await this.flushSave();
+		this.scheduleLayoutRefresh();
 	}
 
 	focusRegion(page: number, rect: RegionReference["rect"]): void {
@@ -587,6 +617,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	detach(): void {
+		this.commitActiveInkBeforeLayoutRefresh();
 		void this.flushSave();
 		this.finishSessionInlineTextEditor(false);
 		this.file = null;
@@ -659,11 +690,17 @@ class NativePdfAnnotatorSession {
 
 	toggleAnnotationMode(): void {
 		this.annotationMode = !this.annotationMode;
+		if (!this.annotationMode) {
+			this.finishSessionInlineTextEditor(true);
+		}
 		if (this.annotationMode && this.currentTool === "select") {
 			this.setActiveTool("pen");
 		}
 		this.applyOverlayMode();
 		this.refreshToolbar();
+		this.syncPages();
+		this.forceRedrawVisibleAnnotations();
+		this.scheduleLayoutRefresh();
 		this.refreshStatus(this.annotationMode ? "Annotation mode enabled" : "Annotation mode disabled");
 	}
 
@@ -678,7 +715,7 @@ class NativePdfAnnotatorSession {
 		}
 		const link = this.buildPageLink(pageNumber);
 		try {
-			await navigator.clipboard.writeText(link);
+			await writeClipboardText(link);
 			new Notice(`Copied page ${pageNumber} link.`);
 			this.refreshStatus(`Copied ${link}`);
 		} catch (error) {
@@ -1088,15 +1125,15 @@ class NativePdfAnnotatorSession {
 		const syntheticPage = this.getSyntheticPageIndex(pageNumber) >= 0
 			? this.getAppendedPages()[this.getSyntheticPageIndex(pageNumber)] ?? null
 			: null;
-		if (!(pdfCanvas instanceof HTMLCanvasElement) && !syntheticPage) {
+		if (!isHtmlCanvasElement(pdfCanvas) && !syntheticPage) {
 			new Notice("Could not find the native PDF page canvas for export.");
 			return null;
 		}
 
 		const exportCanvas = document.createElement("canvas");
 		const ratio = window.devicePixelRatio || 1;
-		const exportWidth = pdfCanvas instanceof HTMLCanvasElement ? pdfCanvas.width : Math.max(1, Math.floor(surface.lastWidth * ratio));
-		const exportHeight = pdfCanvas instanceof HTMLCanvasElement ? pdfCanvas.height : Math.max(1, Math.floor(surface.lastHeight * ratio));
+		const exportWidth = isHtmlCanvasElement(pdfCanvas) ? pdfCanvas.width : Math.max(1, Math.floor(surface.lastWidth * ratio));
+		const exportHeight = isHtmlCanvasElement(pdfCanvas) ? pdfCanvas.height : Math.max(1, Math.floor(surface.lastHeight * ratio));
 		exportCanvas.width = exportWidth;
 		exportCanvas.height = exportHeight;
 		const context = exportCanvas.getContext("2d");
@@ -1105,7 +1142,7 @@ class NativePdfAnnotatorSession {
 			return null;
 		}
 
-		if (pdfCanvas instanceof HTMLCanvasElement) {
+		if (isHtmlCanvasElement(pdfCanvas)) {
 			context.drawImage(pdfCanvas, 0, 0);
 		} else if (syntheticPage) {
 			this.drawSyntheticSnapshotBackground(context, exportWidth, exportHeight, syntheticPage);
@@ -1148,7 +1185,7 @@ class NativePdfAnnotatorSession {
 		}
 
 		const pdfCanvas = surface.hostEl.querySelector("canvas");
-		if (!(pdfCanvas instanceof HTMLCanvasElement)) {
+		if (!isHtmlCanvasElement(pdfCanvas)) {
 			new Notice("Could not find the native PDF page canvas for selection export.");
 			return null;
 		}
@@ -1842,8 +1879,8 @@ class NativePdfAnnotatorSession {
 			eventBus.on?.(name, callback);
 			this.nativeEventHandlers.push({ name, callback });
 		};
-		addHandler("pagerendered", () => this.scheduleSyncPages());
-		addHandler("pagesloaded", () => this.scheduleSyncPages());
+		addHandler("pagerendered", () => this.scheduleLayoutRefresh());
+		addHandler("pagesloaded", () => this.scheduleLayoutRefresh());
 		addHandler("pagechanging", (data?: unknown) => {
 			const pageNumber = typeof data === "object" && data !== null && "pageNumber" in data
 				? Number((data as { pageNumber?: unknown }).pageNumber)
@@ -1854,7 +1891,10 @@ class NativePdfAnnotatorSession {
 			}
 		});
 		addHandler("scalechanging", () => this.markRealPagesZooming());
-		addHandler("scalechanged", () => this.finishZoomingPages());
+		addHandler("scalechanged", () => {
+			this.finishZoomingPages();
+			this.scheduleLayoutRefresh();
+		});
 	}
 
 	private unbindNativePdfEvents(): void {
@@ -1916,9 +1956,11 @@ class NativePdfAnnotatorSession {
 		if (nativeToolbarEl) {
 			this.rootEl.classList.add("is-inline");
 			this.rootEl.classList.remove("is-floating");
-			this.rootEl.style.removeProperty("top");
-			this.rootEl.style.removeProperty("right");
-			this.rootEl.style.removeProperty("left");
+			this.rootEl.setCssStyles({
+				top: "",
+				right: "",
+				left: ""
+			});
 			if (this.rootEl.parentElement !== nativeToolbarEl) {
 				nativeToolbarEl.appendChild(this.rootEl);
 			}
@@ -1940,9 +1982,11 @@ class NativePdfAnnotatorSession {
 		if (!this.rootEl) {
 			return;
 		}
-		this.rootEl.style.top = `${this.floatingToolbarOffset.top}px`;
-		this.rootEl.style.right = `${this.floatingToolbarOffset.right}px`;
-		this.rootEl.style.left = "auto";
+		this.rootEl.setCssStyles({
+			top: `${this.floatingToolbarOffset.top}px`,
+			right: `${this.floatingToolbarOffset.right}px`,
+			left: "auto"
+		});
 	}
 
 	private readonly handleToolbarDragStart = (event: PointerEvent): void => {
@@ -1967,7 +2011,7 @@ class NativePdfAnnotatorSession {
 	};
 
 	private isToolbarInteractiveTarget(target: EventTarget | null): boolean {
-		const element = target instanceof Element ? target : null;
+		const element = isDomElement(target) ? target : null;
 		return !!element?.closest("button, input, select, textarea, a, .clickable-icon, .pdf-native-annotator-preset, .pdf-native-annotator-swatch");
 	}
 
@@ -2005,20 +2049,46 @@ class NativePdfAnnotatorSession {
 		this.destroyObservers();
 
 		this.mutationObserver = new MutationObserver((records) => {
-			const externalChange = records.some((record) => {
-				const target = record.target;
-				return !(target instanceof Node) || !this.isOwnedAnnotatorDom(target);
-			});
+			const externalChange = records.some((record) => this.isExternalPdfMutation(record));
 			if (!externalChange) {
 				return;
 			}
 			this.mountUi();
-			this.scheduleSyncPages();
+			this.scheduleLayoutRefresh();
 		});
 		this.mutationObserver.observe(viewContentEl, {
 			childList: true,
-			subtree: true
+			subtree: true,
+			attributes: true,
+			attributeFilter: ["class", "style", "width", "height", "data-loaded", "data-page-number"]
 		});
+
+		if (typeof ResizeObserver !== "undefined") {
+			this.viewResizeObserver = new ResizeObserver(() => {
+				this.scheduleRepositionOpenPopovers();
+				this.scheduleLayoutRefresh();
+			});
+			this.viewResizeObserver.observe(viewContentEl);
+			const scrollParent = findScrollParent(viewContentEl);
+			if (scrollParent !== viewContentEl) {
+				this.viewResizeObserver.observe(scrollParent);
+			}
+		}
+	}
+
+	private isExternalPdfMutation(record: MutationRecord): boolean {
+		if (!isDomNode(record.target)) {
+			return true;
+		}
+		if (record.type === "childList") {
+			const changedNodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
+			return changedNodes.some((node) => !this.isOwnedAnnotatorDom(node));
+		}
+		if (this.isOwnedAnnotatorDom(record.target)) {
+			return false;
+		}
+		const element = isDomElement(record.target) ? record.target : record.target.parentElement;
+		return !!element?.closest(".pdfViewer, .page[data-page-number], .pdf-page[data-page-number], .canvasWrapper");
 	}
 
 	private isOwnedAnnotatorDom(target: Node): boolean {
@@ -2031,8 +2101,8 @@ class NativePdfAnnotatorSession {
 		if (this.toolPreviewEl?.contains(target)) {
 			return true;
 		}
-		const element = target instanceof Element ? target : target.parentElement;
-		return !!element?.closest(".pdf-native-annotator-synthetic-pages, .pdf-native-annotator-synthetic-page, .pdf-native-annotator-overlay");
+		const element = isDomElement(target) ? target : target.parentElement;
+		return !!element?.closest(".pdf-native-annotator-synthetic-pages, .pdf-native-annotator-synthetic-page, .pdf-native-annotator-overlay, .pdf-native-annotator-transient, .pdf-native-annotator-template-background");
 	}
 
 	private destroyObservers(): void {
@@ -2060,6 +2130,7 @@ class NativePdfAnnotatorSession {
 			window.cancelAnimationFrame(this.popoverRepositionHandle);
 			this.popoverRepositionHandle = null;
 		}
+		this.clearLayoutRefreshHandles();
 		if (this.zoomSettleHandle !== null) {
 			window.clearTimeout(this.zoomSettleHandle);
 			this.zoomSettleHandle = null;
@@ -2070,6 +2141,8 @@ class NativePdfAnnotatorSession {
 		}
 		this.mutationObserver?.disconnect();
 		this.mutationObserver = null;
+		this.viewResizeObserver?.disconnect();
+		this.viewResizeObserver = null;
 		for (const observer of this.pageResizeObservers.values()) {
 			observer.disconnect();
 		}
@@ -2139,6 +2212,7 @@ class NativePdfAnnotatorSession {
 				this.pageResizeObservers.get(pageNumber)?.disconnect();
 				this.pageResizeObservers.delete(pageNumber);
 				surface.overlayEl.remove();
+				surface.transientEl.remove();
 				this.pageSurfaces.delete(pageNumber);
 			}
 		}
@@ -2160,13 +2234,45 @@ class NativePdfAnnotatorSession {
 		}
 	}
 
+	private getPrimaryPdfViewerEl(viewContentEl: HTMLElement): HTMLElement | null {
+		const viewers = Array.from(viewContentEl.querySelectorAll<HTMLElement>(".pdfViewer"));
+		if (viewers.length === 0) {
+			return null;
+		}
+		let bestViewer: { element: HTMLElement; score: number } | null = null;
+		for (const viewer of viewers) {
+			if (!viewer.isConnected) {
+				continue;
+			}
+			const style = window.getComputedStyle(viewer);
+			if (style.display === "none" || style.visibility === "hidden") {
+				continue;
+			}
+			const rect = viewer.getBoundingClientRect();
+			const pageCount = viewer.querySelectorAll(".page[data-page-number], .pdf-page[data-page-number]").length;
+			if (pageCount === 0) {
+				continue;
+			}
+			const area = Math.max(1, rect.width * rect.height);
+			const score = area + (pageCount * 1000);
+			if (!bestViewer || score > bestViewer.score) {
+				bestViewer = { element: viewer, score };
+			}
+		}
+		return bestViewer?.element ?? null;
+	}
+
 	private getRealPdfPageElements(viewContentEl: HTMLElement): { pageEl: HTMLElement; pageNumber: number }[] {
-		const pdfViewerEl = viewContentEl.querySelector<HTMLElement>(".pdfViewer");
+		const pdfViewerEl = this.getPrimaryPdfViewerEl(viewContentEl);
 		const candidates = pdfViewerEl
 			? Array.from(pdfViewerEl.querySelectorAll<HTMLElement>(".page[data-page-number], .pdf-page[data-page-number]"))
 			: Array.from(viewContentEl.querySelectorAll<HTMLElement>(PAGE_SELECTORS));
-		const bestByPage = new Map<number, { pageEl: HTMLElement; pageNumber: number; width: number; hasCanvas: boolean }>();
+		const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+		const bestByPage = new Map<number, { pageEl: HTMLElement; pageNumber: number; area: number; visibleScore: number; hasCanvas: boolean }>();
 		for (const pageEl of candidates) {
+			if (!pageEl.isConnected) {
+				continue;
+			}
 			if (pageEl.classList.contains("pdf-native-annotator-synthetic-page")) {
 				continue;
 			}
@@ -2178,16 +2284,37 @@ class NativePdfAnnotatorSession {
 				continue;
 			}
 			const hostEl = getOverlayHost(pageEl);
-			const canvas = hostEl.querySelector("canvas") ?? pageEl.querySelector("canvas");
-			const rect = hostEl.getBoundingClientRect();
-			const width = Math.max(rect.width, hostEl.clientWidth, pageEl.clientWidth, canvas instanceof HTMLCanvasElement ? canvas.clientWidth : 0);
-			const hasCanvas = canvas instanceof HTMLCanvasElement;
-			if (!hasCanvas && width < 180) {
+			if (!hostEl.isConnected) {
 				continue;
 			}
+			const isDeletedPdfPage = pageEl.classList.contains("pdf-native-annotator-deleted-pdf-page");
+			const pageStyle = window.getComputedStyle(pageEl);
+			const hostStyle = window.getComputedStyle(hostEl);
+			if (
+				!isDeletedPdfPage &&
+				(pageStyle.display === "none" || hostStyle.display === "none" || pageStyle.visibility === "hidden" || hostStyle.visibility === "hidden")
+			) {
+				continue;
+			}
+			const canvas = hostEl.querySelector("canvas") ?? pageEl.querySelector("canvas");
+			const rect = hostEl.getBoundingClientRect();
+			const pageRect = pageEl.getBoundingClientRect();
+			const width = Math.max(rect.width, pageRect.width, hostEl.clientWidth, pageEl.clientWidth, isHtmlCanvasElement(canvas) ? canvas.clientWidth : 0);
+			const height = Math.max(rect.height, pageRect.height, hostEl.clientHeight, pageEl.clientHeight, isHtmlCanvasElement(canvas) ? canvas.clientHeight : 0);
+			const hasCanvas = isHtmlCanvasElement(canvas);
+			if (!isDeletedPdfPage && ((!hasCanvas && width < 180) || width <= 2 || height <= 2)) {
+				continue;
+			}
+			const area = Math.max(1, width * height);
+			const intersectsViewport = rect.bottom > 0 && (!viewportHeight || rect.top < viewportHeight);
+			const visibleScore = (intersectsViewport ? 2 : 0) + (hasCanvas ? 1 : 0);
 			const existing = bestByPage.get(rawPage);
-			if (!existing || width > existing.width || (hasCanvas && !existing.hasCanvas)) {
-				bestByPage.set(rawPage, { pageEl, pageNumber: rawPage, width, hasCanvas });
+			if (
+				!existing ||
+				visibleScore > existing.visibleScore ||
+				(visibleScore === existing.visibleScore && area > existing.area)
+			) {
+				bestByPage.set(rawPage, { pageEl, pageNumber: rawPage, area, visibleScore, hasCanvas });
 			}
 		}
 		return Array.from(bestByPage.values())
@@ -2304,7 +2431,7 @@ class NativePdfAnnotatorSession {
 			pageRect.width,
 			hostEl.clientWidth,
 			pageEl.clientWidth,
-			canvas instanceof HTMLCanvasElement ? canvas.clientWidth : 0
+			isHtmlCanvasElement(canvas) ? canvas.clientWidth : 0
 		);
 	}
 
@@ -2358,15 +2485,11 @@ class NativePdfAnnotatorSession {
 	}
 
 	private setStyleIfChanged(element: HTMLElement, property: keyof CSSStyleDeclaration, value: string): void {
-		if (element.style[property] !== value) {
-			(element.style as unknown as Record<string, string>)[property as string] = value;
-		}
+		element.setCssStyles({ [property]: value } as Partial<CSSStyleDeclaration>);
 	}
 
 	private setStylePropertyIfChanged(element: HTMLElement, property: string, value: string): void {
-		if (element.style.getPropertyValue(property) !== value) {
-			element.style.setProperty(property, value);
-		}
+		element.setCssProps({ [property]: value });
 	}
 
 	private ensurePageSurface(pageEl: HTMLElement, pageNumber: number): void {
@@ -2376,12 +2499,19 @@ class NativePdfAnnotatorSession {
 		}
 		const existing = this.pageSurfaces.get(pageNumber);
 		if (existing && existing.pageEl === pageEl && existing.hostEl === hostEl) {
+			this.ensureOverlayLayerOrder(existing);
 			this.resizeOverlay(existing);
 			return;
 		}
+		if (existing) {
+			this.pageResizeObservers.get(pageNumber)?.disconnect();
+			this.pageResizeObservers.delete(pageNumber);
+			existing.overlayEl.remove();
+			existing.transientEl.remove();
+		}
 
 		if (window.getComputedStyle(hostEl).position === "static") {
-			hostEl.style.position = "relative";
+			hostEl.setCssStyles({ position: "relative" });
 		}
 
 		let overlayEl = hostEl.querySelector<HTMLCanvasElement>(`:scope > .${OVERLAY_CLASS}`);
@@ -2417,7 +2547,23 @@ class NativePdfAnnotatorSession {
 		};
 		this.pageSurfaces.set(pageNumber, surface);
 		this.observePageSurface(surface);
+		this.ensureOverlayLayerOrder(surface);
 		this.resizeOverlay(surface);
+	}
+
+	private ensureOverlayLayerOrder(surface: PageSurface): void {
+		if (!surface.overlayEl.isConnected || surface.overlayEl.parentElement !== surface.hostEl) {
+			surface.hostEl.appendChild(surface.overlayEl);
+		}
+		if (!surface.transientEl.isConnected || surface.transientEl.parentElement !== surface.hostEl) {
+			surface.hostEl.appendChild(surface.transientEl);
+		}
+		if (surface.transientEl.previousElementSibling !== surface.overlayEl || surface.hostEl.lastElementChild !== surface.transientEl) {
+			surface.hostEl.appendChild(surface.overlayEl);
+			surface.hostEl.appendChild(surface.transientEl);
+		}
+		surface.overlayEl.setCssStyles({ zIndex: "9990" });
+		surface.transientEl.setCssStyles({ zIndex: "9991" });
 	}
 
 	private observePageSurface(surface: PageSurface): void {
@@ -2435,9 +2581,10 @@ class NativePdfAnnotatorSession {
 
 	private markPageZooming(pageNumber: number): void {
 		this.zoomingPages.add(pageNumber);
+		this.scheduleLayoutRefresh();
 		const surface = this.pageSurfaces.get(pageNumber);
 		if (surface) {
-			surface.overlayEl.style.opacity = "0.96";
+			surface.overlayEl.setCssStyles({ opacity: "0.96" });
 		}
 		if (this.zoomSettleHandle !== null) {
 			window.clearTimeout(this.zoomSettleHandle);
@@ -2458,7 +2605,7 @@ class NativePdfAnnotatorSession {
 			const surface = this.pageSurfaces.get(pageNumber);
 			if (surface) {
 				this.resizeOverlay(surface);
-				surface.overlayEl.style.opacity = "1";
+				surface.overlayEl.setCssStyles({ opacity: "1" });
 			}
 			this.schedulePageRedraw(pageNumber);
 		}
@@ -2475,10 +2622,14 @@ class NativePdfAnnotatorSession {
 		const { width, height } = size;
 		surface.pendingWidth = width;
 		surface.pendingHeight = height;
-		surface.overlayEl.style.width = `${width}px`;
-		surface.overlayEl.style.height = `${height}px`;
-		surface.transientEl.style.width = `${width}px`;
-		surface.transientEl.style.height = `${height}px`;
+		surface.overlayEl.setCssStyles({
+			width: `${width}px`,
+			height: `${height}px`
+		});
+		surface.transientEl.setCssStyles({
+			width: `${width}px`,
+			height: `${height}px`
+		});
 	}
 
 	private resizeOverlay(surface: PageSurface): void {
@@ -2495,12 +2646,16 @@ class NativePdfAnnotatorSession {
 		const ratio = window.devicePixelRatio || 1;
 		surface.overlayEl.width = Math.floor(width * ratio);
 		surface.overlayEl.height = Math.floor(height * ratio);
-		surface.overlayEl.style.width = `${width}px`;
-		surface.overlayEl.style.height = `${height}px`;
+		surface.overlayEl.setCssStyles({
+			width: `${width}px`,
+			height: `${height}px`
+		});
 		surface.transientEl.width = Math.floor(width * ratio);
 		surface.transientEl.height = Math.floor(height * ratio);
-		surface.transientEl.style.width = `${width}px`;
-		surface.transientEl.style.height = `${height}px`;
+		surface.transientEl.setCssStyles({
+			width: `${width}px`,
+			height: `${height}px`
+		});
 		surface.lastWidth = width;
 		surface.lastHeight = height;
 		surface.pendingWidth = width;
@@ -2609,7 +2764,74 @@ class NativePdfAnnotatorSession {
 
 	private readonly handleViewportResize = (): void => {
 		this.scheduleRepositionOpenPopovers();
+		this.scheduleLayoutRefresh();
 	};
+
+	private clearLayoutRefreshHandles(): void {
+		for (const handle of this.layoutRefreshHandles) {
+			window.clearTimeout(handle);
+		}
+		this.layoutRefreshHandles = [];
+	}
+
+	private scheduleLayoutRefresh(): void {
+		if (!this.file || !this.annotationDocument) {
+			return;
+		}
+		this.scheduleSyncPages();
+		this.clearLayoutRefreshHandles();
+		for (const delayMs of [80, 240, 600, 1200]) {
+			const handle = window.setTimeout(() => {
+				this.layoutRefreshHandles = this.layoutRefreshHandles.filter((pendingHandle) => pendingHandle !== handle);
+				this.syncPages();
+				this.forceRedrawAllAnnotations();
+			}, delayMs);
+			this.layoutRefreshHandles.push(handle);
+		}
+	}
+
+	private forceRedrawAllAnnotations(): void {
+		if (!this.annotationDocument) {
+			return;
+		}
+		this.zoomingPages.clear();
+		this.pendingRedrawPages.clear();
+		this.updateCurrentPageFromScroll();
+		this.updateVisiblePageRange(false);
+		for (const [pageNumber, surface] of this.pageSurfaces.entries()) {
+			surface.overlayEl.setCssStyles({ visibility: "visible" });
+			this.ensureOverlayLayerOrder(surface);
+			this.drawPageAnnotations(pageNumber);
+		}
+	}
+
+	private forceRedrawVisibleAnnotations(): void {
+		if (!this.annotationDocument) {
+			return;
+		}
+		this.updateCurrentPageFromScroll();
+		this.updateVisiblePageRange(false);
+		let redrewAnyPage = false;
+		for (const [pageNumber, surface] of this.pageSurfaces.entries()) {
+			const shouldDraw =
+				pageNumber === this.currentPage ||
+				pageNumber === this.pointerPage ||
+				this.isPageNearViewport(pageNumber) ||
+				!!this.visiblePageRange && pageNumber >= this.visiblePageRange.start && pageNumber <= this.visiblePageRange.end;
+			if (!shouldDraw) {
+				continue;
+			}
+			redrewAnyPage = true;
+			this.zoomingPages.delete(pageNumber);
+			surface.overlayEl.setCssStyles({ visibility: "visible" });
+			this.ensureOverlayLayerOrder(surface);
+			this.drawPageAnnotations(pageNumber);
+		}
+		if (!redrewAnyPage) {
+			this.syncPages();
+			this.forceRedrawAllAnnotations();
+		}
+	}
 
 	private schedulePageRedraw(pageNumber: number): void {
 		if (!this.shouldKeepPageHot(pageNumber)) {
@@ -2750,7 +2972,7 @@ class NativePdfAnnotatorSession {
 
 		for (const [pageNumber, surface] of this.pageSurfaces.entries()) {
 			const hot = this.shouldKeepPageHot(pageNumber);
-			surface.overlayEl.style.visibility = hot ? "visible" : "hidden";
+			surface.overlayEl.setCssStyles({ visibility: "visible" });
 			const wasHot = previousRange
 				? pageNumber >= previousRange.start && pageNumber <= previousRange.end
 				: false;
@@ -2851,10 +3073,14 @@ class NativePdfAnnotatorSession {
 		if (editingExistingText) {
 			frame.classList.add("is-editing-selected");
 		}
-		frame.style.left = `${layout.left}px`;
-		frame.style.top = `${layout.top}px`;
-		frame.style.width = `${layout.width}px`;
-		frame.style.height = `${layout.height}px`;
+		frame.setCssStyles({
+			left: `${layout.left}px`,
+			top: `${layout.top}px`,
+			width: `${layout.width}px`,
+			height: `${layout.height}px`
+		});
+		frame.dataset.left = String(layout.left);
+		frame.dataset.top = String(layout.top);
 		frame.addEventListener("pointerdown", (event) => {
 			event.stopPropagation();
 			if (event.target !== frame) {
@@ -2863,15 +3089,19 @@ class NativePdfAnnotatorSession {
 			event.preventDefault();
 			const startClientX = event.clientX;
 			const startClientY = event.clientY;
-			const startLeft = parseFloat(frame.style.left) || 0;
-			const startTop = parseFloat(frame.style.top) || 0;
+			const startLeft = Number(frame.dataset.left) || 0;
+			const startTop = Number(frame.dataset.top) || 0;
 			const frameRect = frame.getBoundingClientRect();
 			const onMove = (moveEvent: PointerEvent): void => {
 				moveEvent.preventDefault();
 				const nextLeft = clamp(startLeft + (moveEvent.clientX - startClientX), 8, Math.max(8, surface.lastWidth - frameRect.width - 8));
 				const nextTop = clamp(startTop + (moveEvent.clientY - startClientY), 8, Math.max(8, surface.lastHeight - frameRect.height - 8));
-				frame.style.left = `${nextLeft}px`;
-				frame.style.top = `${nextTop}px`;
+				frame.setCssStyles({
+					left: `${nextLeft}px`,
+					top: `${nextTop}px`
+				});
+				frame.dataset.left = String(nextLeft);
+				frame.dataset.top = String(nextTop);
 				this.inlineTextPoint = {
 					x: clamp(nextLeft / Math.max(surface.lastWidth, 1), 0.01, 0.96),
 					y: clamp(nextTop / Math.max(surface.lastHeight, 1), 0.01, 0.96),
@@ -2907,10 +3137,12 @@ class NativePdfAnnotatorSession {
 			this.currentTextColor = textColor;
 		}
 		editor.dataset.textColor = textColor;
-		editor.style.color = "transparent";
-		editor.style.setProperty("-webkit-text-fill-color", "transparent");
-		editor.style.fontSize = `${baseFontSize}px`;
-		editor.style.fontFamily = `"${fontFamily}", sans-serif`;
+		editor.setCssStyles({
+			color: "transparent",
+			fontSize: `${baseFontSize}px`,
+			fontFamily: `"${fontFamily}", sans-serif`
+		});
+		editor.setCssProps({ "-webkit-text-fill-color": "transparent" });
 		frame.appendChild(editor);
 		this.addInlineTextFrameHandles(frame, editor, surface.lastWidth, surface.lastHeight);
 		surface.hostEl.appendChild(frame);
@@ -2921,7 +3153,7 @@ class NativePdfAnnotatorSession {
 		this.inlineTextPageNumber = pageNumber;
 		const resizeEditor = (): void => {
 			if (editingExistingText || boxWidthScale || boxHeightScale) {
-				editor.style.height = "100%";
+				editor.setCssStyles({ height: "100%" });
 				return;
 			}
 			resizeInlineTextEditor(editor, surface.lastHeight * 0.42);
@@ -3064,8 +3296,8 @@ class NativePdfAnnotatorSession {
 				const startClientY = event.clientY;
 				const startWidth = frame.getBoundingClientRect().width;
 				const startHeight = frame.getBoundingClientRect().height;
-				const startLeft = parseFloat(frame.style.left) || 0;
-				const startTop = parseFloat(frame.style.top) || 0;
+				const startLeft = Number(frame.dataset.left) || 0;
+				const startTop = Number(frame.dataset.top) || 0;
 				const onMove = (moveEvent: PointerEvent): void => {
 					moveEvent.preventDefault();
 					const delta = moveEvent.clientX - startClientX;
@@ -3088,11 +3320,15 @@ class NativePdfAnnotatorSession {
 						nextTop = clamp(startTop + deltaY, 8, startTop + startHeight - 36);
 						nextHeight = clamp(startHeight - (nextTop - startTop), 36, Math.max(36, pageHeight - 12));
 					}
-					frame.style.left = `${nextLeft}px`;
-					frame.style.top = `${nextTop}px`;
-					frame.style.width = `${nextWidth}px`;
-					frame.style.height = `${nextHeight}px`;
-					editor.style.height = `${Math.max(36, nextHeight)}px`;
+					frame.setCssStyles({
+						left: `${nextLeft}px`,
+						top: `${nextTop}px`,
+						width: `${nextWidth}px`,
+						height: `${nextHeight}px`
+					});
+					frame.dataset.left = String(nextLeft);
+					frame.dataset.top = String(nextTop);
+					editor.setCssStyles({ height: `${Math.max(36, nextHeight)}px` });
 					if (this.inlineTextPoint) {
 						this.inlineTextPoint = {
 							...this.inlineTextPoint,
@@ -3357,8 +3593,8 @@ class NativePdfAnnotatorSession {
 		this.currentTextColor = color;
 		if (this.inlineTextEditorEl) {
 			this.inlineTextEditorEl.dataset.textColor = color;
-			this.inlineTextEditorEl.style.color = "transparent";
-			this.inlineTextEditorEl.style.setProperty("-webkit-text-fill-color", "transparent");
+			this.inlineTextEditorEl.setCssStyles({ color: "transparent" });
+			this.inlineTextEditorEl.setCssProps({ "-webkit-text-fill-color": "transparent" });
 			if (this.inlineTextPageNumber !== null) {
 				this.drawPageAnnotations(this.inlineTextPageNumber);
 			}
@@ -3372,10 +3608,10 @@ class NativePdfAnnotatorSession {
 	private setTextBoxWidth(widthPx: number, pushHistory = true): void {
 		const safeWidth = clamp(Math.round(widthPx), 160, 760);
 		if (this.inlineTextEditorFrameEl && this.inlineTextEditorEl) {
-			this.inlineTextEditorFrameEl.style.width = `${safeWidth}px`;
+			this.inlineTextEditorFrameEl.setCssStyles({ width: `${safeWidth}px` });
 			const surface = this.inlineTextPageNumber ? this.pageSurfaces.get(this.inlineTextPageNumber) : null;
 			if (this.inlineTextEditorFrameEl.classList.contains("is-editing-selected")) {
-				this.inlineTextEditorEl.style.height = "100%";
+				this.inlineTextEditorEl.setCssStyles({ height: "100%" });
 			} else {
 				resizeInlineTextEditor(this.inlineTextEditorEl, (surface?.lastHeight ?? 600) * 0.42);
 			}
@@ -3389,15 +3625,16 @@ class NativePdfAnnotatorSession {
 		if (!this.inlineTextEditorEl) {
 			return;
 		}
-		this.inlineTextEditorEl.style.color = this.currentTextColor;
 		this.inlineTextEditorEl.dataset.textColor = this.currentTextColor;
-		this.inlineTextEditorEl.style.color = "transparent";
-		this.inlineTextEditorEl.style.setProperty("-webkit-text-fill-color", "transparent");
-		this.inlineTextEditorEl.style.fontFamily = `"${this.currentTextFontFamily}", sans-serif`;
-		this.inlineTextEditorEl.style.fontSize = `${this.currentTextFontSize}px`;
+		this.inlineTextEditorEl.setCssStyles({
+			color: "transparent",
+			fontFamily: `"${this.currentTextFontFamily}", sans-serif`,
+			fontSize: `${this.currentTextFontSize}px`
+		});
+		this.inlineTextEditorEl.setCssProps({ "-webkit-text-fill-color": "transparent" });
 		const surface = this.inlineTextPageNumber ? this.pageSurfaces.get(this.inlineTextPageNumber) : null;
 		if (this.inlineTextEditorFrameEl?.classList.contains("is-editing-selected")) {
-			this.inlineTextEditorEl.style.height = "100%";
+			this.inlineTextEditorEl.setCssStyles({ height: "100%" });
 		} else {
 			resizeInlineTextEditor(this.inlineTextEditorEl, (surface?.lastHeight ?? 600) * 0.42);
 		}
@@ -3747,7 +3984,7 @@ class NativePdfAnnotatorSession {
 			this.currentPage = targetPageNumber;
 			const surface = this.pageSurfaces.get(targetPageNumber);
 			if (surface) {
-				surface.overlayEl.style.visibility = "visible";
+				surface.overlayEl.setCssStyles({ visibility: "visible" });
 				surface.pageEl.scrollIntoView({ block: "center", behavior: "smooth" });
 				this.resizeOverlay(surface);
 				this.applyOverlayMode();
@@ -4400,7 +4637,7 @@ class NativePdfAnnotatorSession {
 					thumbnail.classList.add(`is-template-${entry.template}`);
 				}
 				if (entry.paperColor) {
-					thumbnail.style.setProperty("--page-list-paper", entry.paperColor);
+					thumbnail.setCssProps({ "--page-list-paper": entry.paperColor });
 				}
 				const sheet = thumbnail.createSpan({ cls: "pdf-native-annotator-page-list-thumbnail-sheet" });
 				sheet.createSpan({ cls: "pdf-native-annotator-page-list-thumbnail-pattern" });
@@ -4597,7 +4834,7 @@ class NativePdfAnnotatorSession {
 				swatch.classList.add("is-active");
 			}
 			const inner = swatch.createSpan({ cls: "pdf-native-annotator-swatch-inner" });
-			inner.style.backgroundColor = preset.color;
+			inner.setCssStyles({ backgroundColor: preset.color });
 			swatch.addEventListener("click", () => {
 				this.setCurrentTemplatePageColorValue(preset.color);
 				this.closePaperColorPopover();
@@ -4983,8 +5220,10 @@ class NativePdfAnnotatorSession {
 		const popoverRect = popover.getBoundingClientRect();
 		const left = clamp((window.innerWidth / 2) - (popoverRect.width / 2), 12, window.innerWidth - popoverRect.width - 12);
 		const top = clamp(88, 12, window.innerHeight - popoverRect.height - 12);
-		popover.style.left = `${left}px`;
-		popover.style.top = `${top}px`;
+		popover.setCssStyles({
+			left: `${left}px`,
+			top: `${top}px`
+		});
 		this.confirmPopoverEl = popover;
 		window.addEventListener("keydown", this.handleTransientPopoverKeyDown, { capture: true });
 		window.setTimeout(() => confirmButton.focus(), 0);
@@ -5021,9 +5260,11 @@ class NativePdfAnnotatorSession {
 			const size = this.getCurrentTextSizeForMenu();
 			const color = this.getCurrentTextColorForMenu();
 			const summary = this.getTextSelectionStyleSummary();
-			preview.style.fontFamily = `"${family}", sans-serif`;
-			preview.style.fontSize = `${clamp(size, 12, 40)}px`;
-			preview.style.color = color;
+			preview.setCssStyles({
+				fontFamily: `"${family}", sans-serif`,
+				fontSize: `${clamp(size, 12, 40)}px`,
+				color
+			});
 			selectionSummary.textContent = summary;
 			selectionSummary.classList.toggle("is-hidden", summary.length === 0);
 			if (fontSelect && fontSelect !== document.activeElement) {
@@ -5043,7 +5284,7 @@ class NativePdfAnnotatorSession {
 		fontSelect = fontRow.createEl("select", { cls: "dropdown pdf-native-annotator-font-select" });
 		for (const fontFamily of TEXT_FONT_FAMILIES) {
 			const option = fontSelect.createEl("option", { text: fontFamily, value: fontFamily });
-			option.style.fontFamily = `"${fontFamily}", sans-serif`;
+			option.setCssStyles({ fontFamily: `"${fontFamily}", sans-serif` });
 		}
 		fontSelect.value = this.getCurrentTextFontFamilyForMenu();
 		fontSelect.addEventListener("change", () => {
@@ -5075,7 +5316,7 @@ class NativePdfAnnotatorSession {
 			colorButton.className = "pdf-native-annotator-font-color-option";
 			colorButton.title = preset.label;
 			colorButton.dataset.color = preset.color;
-			colorButton.style.backgroundColor = preset.color;
+			colorButton.setCssStyles({ backgroundColor: preset.color });
 			colorButton.addEventListener("click", () => {
 				this.setTextColor(preset.color);
 				syncPopoverState();
@@ -5164,7 +5405,7 @@ class NativePdfAnnotatorSession {
 
 	private getCurrentTextBoxWidthForMenu(): number {
 		if (this.inlineTextEditorFrameEl) {
-			const width = parseFloat(this.inlineTextEditorFrameEl.style.width);
+			const width = this.inlineTextEditorFrameEl.getBoundingClientRect().width;
 			return Number.isFinite(width) ? Math.round(width) : 280;
 		}
 		if (this.annotationDocument && this.hasSelectedText()) {
@@ -5399,9 +5640,36 @@ class NativePdfAnnotatorSession {
 			button.classList.add("is-active");
 		}
 		button.textContent = label;
-		button.addEventListener("pointerdown", (event) => event.stopPropagation());
-		button.addEventListener("click", onClick);
+		this.bindToolbarButtonActivation(button, onClick);
 		return button;
+	}
+
+	private bindToolbarButtonActivation(button: HTMLButtonElement, onActivate: (event: Event) => void): void {
+		let handledMousePointerUp = false;
+		button.addEventListener("pointerdown", (event) => event.stopPropagation());
+		button.addEventListener("pointerup", (event) => {
+			event.stopPropagation();
+			if (event.pointerType !== "mouse" || event.button !== 0 || button.disabled) {
+				return;
+			}
+			handledMousePointerUp = true;
+			event.preventDefault();
+			onActivate(event);
+			window.setTimeout(() => {
+				handledMousePointerUp = false;
+			}, 0);
+		});
+		button.addEventListener("click", (event) => {
+			event.stopPropagation();
+			if (handledMousePointerUp) {
+				event.preventDefault();
+				return;
+			}
+			event.preventDefault();
+			if (!button.disabled) {
+				onActivate(event);
+			}
+		});
 	}
 
 	private createIconButton(icon: string, label: string, active: boolean, onClick: () => void): HTMLButtonElement {
@@ -5496,8 +5764,10 @@ class NativePdfAnnotatorSession {
 		const aboveSpace = anchorRect.top;
 		const preferredTop = belowSpace >= popoverRect.height + 22 || belowSpace >= aboveSpace ? belowTop : aboveTop;
 		const top = clamp(preferredTop, 12, window.innerHeight - popoverRect.height - 12);
-		popover.style.left = `${left}px`;
-		popover.style.top = `${top}px`;
+		popover.setCssStyles({
+			left: `${left}px`,
+			top: `${top}px`
+		});
 	}
 
 	private scheduleRepositionOpenPopovers(): void {
@@ -5555,13 +5825,14 @@ class NativePdfAnnotatorSession {
 		}
 		const preview = document.createElement("span");
 		preview.className = "pdf-native-annotator-preset-preview";
-		preview.style.backgroundColor = preset.kind === "eraser" ? "var(--text-muted)" : preset.color;
-		preview.style.opacity = String(preset.opacity);
-		preview.style.height = `${Math.max(4, Math.min(14, preset.width))}px`;
-		preview.style.width = `${Math.max(18, Math.min(34, preset.width * 2.6))}px`;
+		preview.setCssStyles({
+			backgroundColor: preset.kind === "eraser" ? "var(--text-muted)" : preset.color,
+			opacity: String(preset.opacity),
+			height: `${Math.max(4, Math.min(14, preset.width))}px`,
+			width: `${Math.max(18, Math.min(34, preset.width * 2.6))}px`
+		});
 		button.appendChild(preview);
-		button.addEventListener("pointerdown", (event) => event.stopPropagation());
-		button.addEventListener("click", () => {
+		this.bindToolbarButtonActivation(button, () => {
 			this.applyPreset(preset.id);
 		});
 		return button;
@@ -5578,10 +5849,9 @@ class NativePdfAnnotatorSession {
 		}
 		const inner = document.createElement("span");
 		inner.className = "pdf-native-annotator-swatch-inner";
-		inner.style.backgroundColor = color;
+		inner.setCssStyles({ backgroundColor: color });
 		button.appendChild(inner);
-		button.addEventListener("pointerdown", (event) => event.stopPropagation());
-		button.addEventListener("click", () => {
+		this.bindToolbarButtonActivation(button, () => {
 			if (this.shouldApplyStyleToSelection()) {
 				this.applyColorToSelection(color);
 			}
@@ -5598,13 +5868,8 @@ class NativePdfAnnotatorSession {
 		button.title = "Choose color";
 		button.setAttribute("aria-label", "Choose ink color");
 		const preview = button.createSpan({ cls: "pdf-native-annotator-color-button-preview" });
-		preview.style.backgroundColor = this.currentColor;
-		button.addEventListener("pointerdown", (event) => {
-			event.stopPropagation();
-		});
-		button.addEventListener("click", (event) => {
-			event.preventDefault();
-			event.stopPropagation();
+		preview.setCssStyles({ backgroundColor: this.currentColor });
+		this.bindToolbarButtonActivation(button, () => {
 			this.openColorPopover(button);
 		});
 		return button;
@@ -5649,7 +5914,7 @@ class NativePdfAnnotatorSession {
 			this.setCurrentColor(colorInput.value);
 			const preview = anchor.querySelector<HTMLElement>(".pdf-native-annotator-color-button-preview");
 			if (preview) {
-				preview.style.backgroundColor = colorInput.value;
+				preview.setCssStyles({ backgroundColor: colorInput.value });
 			}
 		});
 		colorInput.addEventListener("change", () => {
@@ -5676,12 +5941,7 @@ class NativePdfAnnotatorSession {
 		button.setAttribute("aria-label", `${this.getStrokePopoverTitle()} ${width.toFixed(1)} px`);
 		setIcon(button.createSpan({ cls: "pdf-native-annotator-stroke-icon" }), "sliders-horizontal");
 		button.createSpan({ cls: "pdf-native-annotator-stroke-value", text: `${width.toFixed(1)}` });
-		button.addEventListener("pointerdown", (event) => {
-			event.stopPropagation();
-		});
-		button.addEventListener("click", (event) => {
-			event.preventDefault();
-			event.stopPropagation();
+		this.bindToolbarButtonActivation(button, () => {
 			this.openStrokeThicknessPopover(button);
 		});
 		return button;
@@ -5708,8 +5968,10 @@ class NativePdfAnnotatorSession {
 		if (!preview) {
 			return;
 		}
-		preview.style.height = `${Math.max(4, Math.min(14, width))}px`;
-		preview.style.width = `${Math.max(18, Math.min(34, width * 2.6))}px`;
+		preview.setCssStyles({
+			height: `${Math.max(4, Math.min(14, width))}px`,
+			width: `${Math.max(18, Math.min(34, width * 2.6))}px`
+		});
 	}
 
 	private getWidthStorageTool(tool: AnnotationTool = this.currentTool): AnnotationTool {
@@ -5740,14 +6002,14 @@ class NativePdfAnnotatorSession {
 		title.appendChild(this.createPopoverCloseButton(() => this.closeStrokePopover()));
 		const previewWrap = popover.createDiv({ cls: "pdf-native-annotator-stroke-popover-preview" });
 		const previewLine = previewWrap.createSpan({ cls: "pdf-native-annotator-stroke-popover-preview-line" });
-		previewLine.style.setProperty("--stroke-preview-size", `${initialWidth}px`);
+		previewLine.setCssProps({ "--stroke-preview-size": `${initialWidth}px` });
 		if (targetTool === "highlighter") {
 			previewWrap.classList.add("is-highlighter");
-			previewLine.style.backgroundColor = this.currentColor;
+			previewLine.setCssStyles({ backgroundColor: this.currentColor });
 		} else if (targetTool === "eraser") {
 			previewWrap.classList.add("is-eraser");
 		} else {
-			previewLine.style.backgroundColor = this.currentColor;
+			previewLine.setCssStyles({ backgroundColor: this.currentColor });
 		}
 		const body = popover.createDiv({ cls: "pdf-native-annotator-stroke-popover-body" });
 		const valueLabel = body.createSpan({ cls: "pdf-native-annotator-stroke-popover-value", text: `${initialWidth.toFixed(1)} px` });
@@ -5768,7 +6030,7 @@ class NativePdfAnnotatorSession {
 			}
 			const width = Number(slider.value);
 			valueLabel.textContent = `${width.toFixed(1)} px`;
-			previewLine.style.setProperty("--stroke-preview-size", `${width}px`);
+			previewLine.setCssProps({ "--stroke-preview-size": `${width}px` });
 			this.setToolbarWidth(width, false, targetTool, false);
 			this.updateStrokePreviewElement(anchor, width);
 		});
@@ -6014,10 +6276,12 @@ class NativePdfAnnotatorSession {
 		}
 		const size = radius * 2;
 		const rect = viewContentEl.getBoundingClientRect();
-		this.toolPreviewEl.style.width = `${size}px`;
-		this.toolPreviewEl.style.height = `${size}px`;
-		this.toolPreviewEl.style.left = `${clientX - rect.left - radius}px`;
-		this.toolPreviewEl.style.top = `${clientY - rect.top - radius}px`;
+		this.toolPreviewEl.setCssStyles({
+			width: `${size}px`,
+			height: `${size}px`,
+			left: `${clientX - rect.left - radius}px`,
+			top: `${clientY - rect.top - radius}px`
+		});
 	}
 
 	private hideToolPreview(): void {
@@ -6203,19 +6467,21 @@ class NativePdfAnnotatorSession {
 	private applyOverlayMode(): void {
 		for (const surface of this.pageSurfaces.values()) {
 			surface.overlayEl.classList.toggle("is-enabled", this.annotationMode);
-			surface.overlayEl.style.pointerEvents = this.annotationMode ? "auto" : "none";
-			surface.overlayEl.style.touchAction = this.annotationMode ? this.getOverlayTouchAction() : "";
-			surface.overlayEl.style.cursor = this.annotationMode
-				? this.currentTool === "select"
-					? "grab"
-					: this.currentTool === "region"
-					? "crosshair"
-					: this.currentTool === "eraser"
-					? "cell"
-					: this.currentTool === "text"
-						? "text"
-						: "crosshair"
-				: "default";
+			surface.overlayEl.setCssStyles({
+				pointerEvents: this.annotationMode ? "auto" : "none",
+				touchAction: this.annotationMode ? this.getOverlayTouchAction() : "",
+				cursor: this.annotationMode
+					? this.currentTool === "select"
+						? "grab"
+						: this.currentTool === "region"
+						? "crosshair"
+						: this.currentTool === "eraser"
+						? "cell"
+						: this.currentTool === "text"
+							? "text"
+							: "crosshair"
+					: "default"
+			});
 		}
 		if (!this.annotationMode) {
 			this.hideToolPreview();
@@ -6312,7 +6578,7 @@ class NativePdfAnnotatorSession {
 			return false;
 		}
 		const target = event.target;
-		if (target instanceof HTMLElement) {
+		if (isHtmlElement(target)) {
 			if (target.isContentEditable || target.closest("input, textarea, select, [contenteditable='true']")) {
 				return false;
 			}
@@ -6338,7 +6604,7 @@ class NativePdfAnnotatorSession {
 			return false;
 		}
 		const target = event.target;
-		if (target instanceof HTMLElement) {
+		if (isHtmlElement(target)) {
 			if (target.isContentEditable || target.closest("input, textarea, select, [contenteditable='true']")) {
 				return false;
 			}
@@ -6414,7 +6680,7 @@ class NativePdfAnnotatorSession {
 		if (!this.annotationMode || this.pointerPage !== null) {
 			return;
 		}
-		const target = event.target instanceof Element ? event.target : null;
+		const target = isDomElement(event.target) ? event.target : null;
 		if (!target || target.closest(`.${SESSION_ROOT_CLASS}, .menu, .menu-item, .modal, .modal-container, .popover, .suggestion-container, .prompt, .pdf-native-annotator-popover-backdrop, .pdf-native-annotator-color-popover, .pdf-native-annotator-confirm-popover, .pdf-native-annotator-rename-popover, .pdf-native-annotator-font-popover, .pdf-native-annotator-stroke-popover, .pdf-native-annotator-page-list-popover, .pdf-native-annotator-inline-text-frame, .pdf-native-annotator-inline-text-editor, .pdf-native-annotator-inline-text-handle`)) {
 			return;
 		}
@@ -6439,10 +6705,10 @@ class NativePdfAnnotatorSession {
 		let bestSurface: PageSurface | null = null;
 		let bestArea = Number.POSITIVE_INFINITY;
 		for (const surface of this.pageSurfaces.values()) {
-			if (!surface.overlayEl.isConnected || surface.overlayEl.style.visibility === "hidden") {
+			if (!surface.overlayEl.isConnected || window.getComputedStyle(surface.overlayEl).visibility === "hidden") {
 				continue;
 			}
-			const rect = surface.hostEl.getBoundingClientRect();
+			const rect = surface.overlayEl.getBoundingClientRect();
 			if (
 				clientX < rect.left ||
 				clientX > rect.right ||
@@ -6485,8 +6751,12 @@ class NativePdfAnnotatorSession {
 			return null;
 		}
 		let bestEntry: { pageEl: HTMLElement; pageNumber: number; area: number } | null = null;
-		const pageSelector = `${PAGE_SELECTORS}, .pdf-native-annotator-synthetic-page[data-page-number]`;
-		for (const pageEl of Array.from(viewContentEl.querySelectorAll<HTMLElement>(pageSelector))) {
+		const primaryViewerEl = this.getPrimaryPdfViewerEl(viewContentEl);
+		const realPageEls = primaryViewerEl
+			? Array.from(primaryViewerEl.querySelectorAll<HTMLElement>(".page[data-page-number], .pdf-page[data-page-number]"))
+			: Array.from(viewContentEl.querySelectorAll<HTMLElement>(PAGE_SELECTORS));
+		const syntheticPageEls = Array.from(viewContentEl.querySelectorAll<HTMLElement>(".pdf-native-annotator-synthetic-page[data-page-number]"));
+		for (const pageEl of [...realPageEls, ...syntheticPageEls]) {
 			if (pageEl.classList.contains("pdf-native-annotator-synthetic-page") && !pageEl.dataset.pageNumber) {
 				continue;
 			}
@@ -6508,7 +6778,19 @@ class NativePdfAnnotatorSession {
 
 	private getPageElementForPageNumber(pageNumber: number): { pageEl: HTMLElement; pageNumber: number } | null {
 		const viewContentEl = this.getViewContentEl();
-		const pageEl = viewContentEl?.querySelector<HTMLElement>(`.pdf-native-annotator-synthetic-page[data-page-number="${pageNumber}"], .page[data-page-number="${pageNumber}"], .pdf-page[data-page-number="${pageNumber}"]`);
+		const existingSurface = this.pageSurfaces.get(pageNumber);
+		if (existingSurface?.pageEl.isConnected) {
+			return { pageEl: existingSurface.pageEl, pageNumber };
+		}
+		if (!viewContentEl) {
+			return null;
+		}
+		const syntheticPageEl = viewContentEl.querySelector<HTMLElement>(`.pdf-native-annotator-synthetic-page[data-page-number="${pageNumber}"]`);
+		if (syntheticPageEl) {
+			return { pageEl: syntheticPageEl, pageNumber };
+		}
+		const primaryViewerEl = this.getPrimaryPdfViewerEl(viewContentEl);
+		const pageEl = (primaryViewerEl ?? viewContentEl).querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"], .pdf-page[data-page-number="${pageNumber}"]`);
 		return pageEl ? { pageEl, pageNumber } : null;
 	}
 
@@ -6517,7 +6799,7 @@ class NativePdfAnnotatorSession {
 		if (this.activePdfPointerId === event.pointerId) {
 			return;
 		}
-		const canvas = event.currentTarget instanceof HTMLCanvasElement ? event.currentTarget : null;
+		const canvas = isHtmlCanvasElement(event.currentTarget) ? event.currentTarget : null;
 		if (!canvas) {
 			this.refreshStatus("Could not start ink: pointer target is not the annotator canvas", 4000);
 			return;
@@ -6548,12 +6830,12 @@ class NativePdfAnnotatorSession {
 			this.scheduleSyncPages();
 			return;
 		}
-		canvas.style.touchAction = this.getOverlayTouchAction();
+		canvas.setCssStyles({ touchAction: this.getOverlayTouchAction() });
 		if (shouldIgnoreInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())) {
 			return;
 		}
 		if (isInkDrawingTool(this.currentTool)) {
-			canvas.style.touchAction = "none";
+			canvas.setCssStyles({ touchAction: "none" });
 		}
 
 		this.currentPage = pageNumber;
@@ -6582,7 +6864,7 @@ class NativePdfAnnotatorSession {
 				this.dragMoved = false;
 				this.activeResizeHandle = handle;
 				this.pointerPage = pageNumber;
-				canvas.style.cursor = this.getCursorForHandle(handle);
+				canvas.setCssStyles({ cursor: this.getCursorForHandle(handle) });
 				this.refreshStatus("Resize handle selected");
 				return;
 			}
@@ -6593,7 +6875,7 @@ class NativePdfAnnotatorSession {
 				this.dragMoved = false;
 				this.activeResizeHandle = null;
 				this.pointerPage = pageNumber;
-				canvas.style.cursor = "grabbing";
+				canvas.setCssStyles({ cursor: "grabbing" });
 				this.selectedTarget = selectedHit;
 				this.refreshStatus(this.selectedTargets.length > 1 ? `Moving ${this.selectedTargets.length} selections` : "Moving selection");
 				return;
@@ -6645,7 +6927,7 @@ class NativePdfAnnotatorSession {
 			this.dragMoved = false;
 			this.activeResizeHandle = null;
 			this.pointerPage = pageNumber;
-			canvas.style.cursor = "grabbing";
+			canvas.setCssStyles({ cursor: "grabbing" });
 			this.drawPageAnnotations(pageNumber);
 			this.refreshStatus(this.selectedTargets.length > 1 ? `Selected ${this.selectedTargets.length} objects` : `Selected ${hit.kind}`);
 			return;
@@ -6691,7 +6973,7 @@ class NativePdfAnnotatorSession {
 						this.dragMoved = false;
 						this.activeResizeHandle = handle;
 						this.pointerPage = pageNumber;
-						canvas.style.cursor = this.getCursorForHandle(handle);
+						canvas.setCssStyles({ cursor: this.getCursorForHandle(handle) });
 						this.refreshStatus("Resize text box");
 						return;
 					}
@@ -6701,7 +6983,7 @@ class NativePdfAnnotatorSession {
 						this.dragMoved = false;
 						this.activeResizeHandle = null;
 						this.pointerPage = pageNumber;
-						canvas.style.cursor = "grabbing";
+						canvas.setCssStyles({ cursor: "grabbing" });
 						this.refreshStatus("Moving text box");
 						return;
 					}
@@ -6872,6 +7154,49 @@ class NativePdfAnnotatorSession {
 		}
 	}
 
+	private commitActiveInkBeforeLayoutRefresh(): void {
+		if (!this.annotationDocument) {
+			return;
+		}
+		if (this.currentStroke && this.currentStroke.points.length > 0) {
+			this.annotationDocument.strokes.push(this.currentStroke);
+			const pageNumber = this.currentStroke.page;
+			this.currentStroke = null;
+			this.currentShape = null;
+			this.currentLasso = null;
+			this.dragAnchor = null;
+			this.activeResizeHandle = null;
+			this.erasingSession = false;
+			this.lastEraserPoint = null;
+			this.pointerPage = null;
+			this.dragMoved = false;
+			this.unbindPdfPointerDocumentTracking();
+			this.invalidateAnnotationPageCache();
+			this.isDirty = true;
+			this.scheduleSave();
+			this.drawPageAnnotations(pageNumber);
+			return;
+		}
+		if (this.currentShape) {
+			this.annotationDocument.shapes.push(this.currentShape);
+			const pageNumber = this.currentShape.page;
+			this.currentStroke = null;
+			this.currentShape = null;
+			this.currentLasso = null;
+			this.dragAnchor = null;
+			this.activeResizeHandle = null;
+			this.erasingSession = false;
+			this.lastEraserPoint = null;
+			this.pointerPage = null;
+			this.dragMoved = false;
+			this.unbindPdfPointerDocumentTracking();
+			this.invalidateAnnotationPageCache();
+			this.isDirty = true;
+			this.scheduleSave();
+			this.drawPageAnnotations(pageNumber);
+		}
+	}
+
 	private bindPdfPointerDocumentTracking(pointerId: number, canvas: HTMLCanvasElement): void {
 		this.unbindPdfPointerDocumentTracking();
 		this.activePdfPointerId = pointerId;
@@ -6926,7 +7251,7 @@ class NativePdfAnnotatorSession {
 		if (this.shouldHandleDocumentPointer(event)) {
 			return;
 		}
-		const canvas = event.currentTarget instanceof HTMLCanvasElement ? event.currentTarget : null;
+		const canvas = isHtmlCanvasElement(event.currentTarget) ? event.currentTarget : null;
 		if (!canvas) {
 			return;
 		}
@@ -7036,7 +7361,7 @@ class NativePdfAnnotatorSession {
 		if (this.shouldHandleDocumentPointer(event)) {
 			return;
 		}
-		const canvas = event.currentTarget instanceof HTMLCanvasElement ? event.currentTarget : null;
+		const canvas = isHtmlCanvasElement(event.currentTarget) ? event.currentTarget : null;
 		this.handlePointerUpForCanvas(event, canvas);
 	};
 
@@ -7048,7 +7373,7 @@ class NativePdfAnnotatorSession {
 			} catch {
 				// noop
 			}
-			canvas.style.touchAction = this.getOverlayTouchAction();
+			canvas.setCssStyles({ touchAction: this.getOverlayTouchAction() });
 		}
 		this.unbindPdfPointerDocumentTracking();
 
@@ -7105,7 +7430,7 @@ class NativePdfAnnotatorSession {
 				this.pointerPage = null;
 				this.activeResizeHandle = null;
 				if (canvas) {
-					canvas.style.cursor = "text";
+					canvas.setCssStyles({ cursor: "text" });
 				}
 				if (this.dragMoved) {
 					this.markDirtyAndRedraw("Text box updated");
@@ -7182,7 +7507,7 @@ class NativePdfAnnotatorSession {
 			this.pointerPage = null;
 			this.activeResizeHandle = null;
 			if (canvas) {
-				canvas.style.cursor = "grab";
+				canvas.setCssStyles({ cursor: "grab" });
 			}
 			if (this.dragMoved) {
 				this.markDirtyAndRedraw("Selection updated");
@@ -7235,7 +7560,7 @@ class NativePdfAnnotatorSession {
 		if (this.shouldHandleDocumentPointer(event)) {
 			return;
 		}
-		const canvas = event.currentTarget instanceof HTMLCanvasElement ? event.currentTarget : null;
+		const canvas = isHtmlCanvasElement(event.currentTarget) ? event.currentTarget : null;
 		this.handlePointerCancelForCanvas(event, canvas);
 	};
 
@@ -7246,7 +7571,7 @@ class NativePdfAnnotatorSession {
 			} catch {
 				// noop
 			}
-			canvas.style.touchAction = this.getOverlayTouchAction();
+			canvas.setCssStyles({ touchAction: this.getOverlayTouchAction() });
 		}
 		this.unbindPdfPointerDocumentTracking();
 		this.cancelActiveSessionInteraction();
@@ -7621,6 +7946,7 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 
+		this.ensureOverlayLayerOrder(surface);
 		this.resizeOverlay(surface);
 		if (!surface.overlayEl.isConnected) {
 			this.scheduleSyncPages();
@@ -7710,6 +8036,7 @@ class NativePdfAnnotatorSession {
 		if (!surface) {
 			return;
 		}
+		this.ensureOverlayLayerOrder(surface);
 		const context = surface.transientEl.getContext("2d");
 		if (!context) {
 			return;
@@ -7919,8 +8246,8 @@ class NativePdfAnnotatorSession {
 		if (!preview?.boxHeightScale || !surface || !this.inlineTextEditorFrameEl || !this.inlineTextEditorEl) {
 			return;
 		}
-		this.inlineTextEditorFrameEl.style.height = `${preview.boxHeightScale * surface.lastHeight}px`;
-		this.inlineTextEditorEl.style.height = "100%";
+		this.inlineTextEditorFrameEl.setCssStyles({ height: `${preview.boxHeightScale * surface.lastHeight}px` });
+		this.inlineTextEditorEl.setCssStyles({ height: "100%" });
 	}
 
 	private drawShape(context: CanvasRenderingContext2D, surface: PageSurface, shape: ShapeAnnotation): void {
@@ -8759,6 +9086,7 @@ class NativePdfAnnotatorSession {
 			surface.overlayEl.removeEventListener("pointercancel", this.handlePointerCancel);
 			surface.overlayEl.removeEventListener("pointerleave", this.handlePointerLeave);
 			surface.overlayEl.remove();
+			surface.transientEl.remove();
 		}
 		this.pageResizeObservers.clear();
 		this.zoomingPages.clear();
@@ -8769,6 +9097,97 @@ class NativePdfAnnotatorSession {
 		viewContentEl?.removeEventListener("pointermove", this.handleViewPointerMove);
 		viewContentEl?.removeEventListener("pointerleave", this.handleViewPointerLeave);
 		document.removeEventListener("pointerdown", this.handleDocumentPointerDown, true);
+	}
+
+	async diagnoseOverlayState(): Promise<void> {
+		this.syncPages();
+		this.forceRedrawAllAnnotations();
+		const pageNumber = this.currentPage;
+		const surface = this.pageSurfaces.get(pageNumber) ?? Array.from(this.pageSurfaces.values())[0] ?? null;
+		if (!surface) {
+			const report = {
+				pageNumber,
+				surfaces: this.pageSurfaces.size,
+				error: "No page surface is registered"
+			};
+			await writeClipboardText(JSON.stringify(report, null, 2));
+			this.refreshStatus("Overlay diagnostic copied: no page surface", 8000);
+			new Notice("Freedraw PDF diagnostic copied to clipboard.");
+			return;
+		}
+
+		const pageRect = surface.pageEl.getBoundingClientRect();
+		const hostRect = surface.hostEl.getBoundingClientRect();
+		const overlayRect = surface.overlayEl.getBoundingClientRect();
+		const centerX = overlayRect.left + overlayRect.width / 2;
+		const centerY = overlayRect.top + overlayRect.height / 2;
+		const stack = document.elementsFromPoint(centerX, centerY).slice(0, 8).map((element) => ({
+			tag: element.tagName.toLowerCase(),
+			className: isHtmlElement(element) ? element.className : "",
+			id: element.id || ""
+		}));
+		const bucket = this.getPageAnnotationBucket(surface.pageNumber);
+		const context = surface.overlayEl.getContext("2d");
+		const overlayStyle = window.getComputedStyle(surface.overlayEl);
+		let alphaPixels = 0;
+		if (context && surface.overlayEl.width > 0 && surface.overlayEl.height > 0) {
+			const sampleWidth = Math.min(surface.overlayEl.width, 240);
+			const sampleHeight = Math.min(surface.overlayEl.height, 240);
+			const data = context.getImageData(0, 0, sampleWidth, sampleHeight).data;
+			for (let index = 3; index < data.length; index += 4) {
+				if (data[index] > 0) {
+					alphaPixels += 1;
+				}
+			}
+		}
+		const report = {
+			pageNumber: surface.pageNumber,
+			currentPage: this.currentPage,
+			annotationMode: this.annotationMode,
+			surfaces: this.pageSurfaces.size,
+			annotations: {
+				strokes: bucket.strokes.length,
+				textItems: bucket.textItems.length,
+				shapes: bucket.shapes.length,
+				imageItems: bucket.imageItems.length
+			},
+			pageRect: this.roundRectForDiagnostic(pageRect),
+			hostRect: this.roundRectForDiagnostic(hostRect),
+			overlayRect: this.roundRectForDiagnostic(overlayRect),
+			canvas: {
+				width: surface.overlayEl.width,
+				height: surface.overlayEl.height,
+				styleWidth: overlayStyle.width,
+				styleHeight: overlayStyle.height,
+				visibility: overlayStyle.visibility,
+				display: overlayStyle.display,
+				opacity: overlayStyle.opacity,
+				pointerEvents: overlayStyle.pointerEvents,
+				alphaPixels
+			},
+			connection: {
+				pageConnected: surface.pageEl.isConnected,
+				hostConnected: surface.hostEl.isConnected,
+				overlayConnected: surface.overlayEl.isConnected,
+				overlayParentClass: isHtmlElement(surface.overlayEl.parentElement) ? surface.overlayEl.parentElement.className : null
+			},
+			topStack: stack
+		};
+		await writeClipboardText(JSON.stringify(report, null, 2));
+		this.refreshStatus(`Overlay diagnostic copied: p${surface.pageNumber}, alpha ${alphaPixels}`, 10000);
+		new Notice("Freedraw PDF diagnostic copied to clipboard.");
+	}
+
+	private roundRectForDiagnostic(rect: DOMRect): { left: number; top: number; width: number; height: number; right: number; bottom: number } {
+		const round = (value: number): number => Math.round(value * 10) / 10;
+		return {
+			left: round(rect.left),
+			top: round(rect.top),
+			width: round(rect.width),
+			height: round(rect.height),
+			right: round(rect.right),
+			bottom: round(rect.bottom)
+		};
 	}
 
 	private refreshStatus(message: string, durationMs = 2500): void {
@@ -9297,6 +9716,19 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "diagnose-pdf-annotation-overlay",
+			name: "Diagnose PDF annotation overlay",
+			checkCallback: (checking: boolean) => {
+				const session = this.getSessionForLeaf(this.getActivePdfLeaf());
+				const canRun = !!session;
+				if (canRun && !checking) {
+					void session.diagnoseOverlayState();
+				}
+				return canRun;
+			}
+		});
+
+		this.addCommand({
 			id: "open-selection-region-reference-from-clipboard",
 			name: "Open selection region reference from clipboard",
 			callback: () => {
@@ -9311,7 +9743,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 			void this.syncSessions();
 		}));
 		this.registerEvent(this.app.workspace.on("layout-change", () => {
-			void this.syncSessions();
+			void Promise.all(Array.from(this.sessions.values()).map((session) => session.refreshLayoutAndFlush()));
 		}));
 		this.registerEvent(this.app.vault.on("rename", (abstractFile: TAbstractFile, oldPath: string) => {
 			if (!(abstractFile instanceof TFile) || abstractFile.extension.toLowerCase() !== "pdf") {
@@ -9575,7 +10007,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 	async openRegionReferenceFromClipboard(): Promise<void> {
 		try {
-			const raw = await navigator.clipboard.readText();
+			const raw = await readClipboardText();
 			const opened = await this.openRegionReference(raw);
 			if (!opened) {
 				new Notice("Clipboard does not contain a valid selection region reference.");

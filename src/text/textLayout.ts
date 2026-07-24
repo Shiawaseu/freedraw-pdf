@@ -44,8 +44,8 @@ export function getInlineTextEditorLayout(
 }
 
 export function resizeInlineTextEditor(editor: HTMLTextAreaElement, maxHeight: number): void {
-	editor.style.height = "auto";
-	editor.style.height = `${Math.min(Math.max(40, editor.scrollHeight + 2), Math.max(80, maxHeight))}px`;
+	editor.setCssStyles({ height: "auto" });
+	editor.setCssStyles({ height: `${Math.min(Math.max(40, editor.scrollHeight + 2), Math.max(80, maxHeight))}px` });
 }
 
 export function getWrappedCanvasTextLines(context: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {

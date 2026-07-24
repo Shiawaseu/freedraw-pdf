@@ -3,15 +3,13 @@
  */
 
 export function isMobileWebKitTouchDevice(): boolean {
-	if (typeof navigator === "undefined") return false;
-	const ua = navigator.userAgent.toLowerCase();
-	return /iphone|ipad|ipod/.test(ua);
+	return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)")?.matches === true;
 }
 
 export function isTabletWebKitTouchDevice(): boolean {
-	if (typeof navigator === "undefined") return false;
-	const ua = navigator.userAgent.toLowerCase();
-	return /ipad/.test(ua) || (/macintosh/.test(ua) && navigator.maxTouchPoints > 0);
+	return typeof window !== "undefined" &&
+		window.matchMedia?.("(pointer: coarse)")?.matches === true &&
+		window.matchMedia?.("(hover: none)")?.matches === true;
 }
 
 export function isTabletStylusPlatform(): boolean {

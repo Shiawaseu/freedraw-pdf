@@ -26,7 +26,9 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "freedraw-pdf" });
+		new Setting(containerEl)
+			.setName("freedraw-pdf")
+			.setHeading();
 
 		new Setting(containerEl)
 			.setName("Prefer native PDF toolbar")
@@ -86,11 +88,10 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 					});
 			});
 
-		containerEl.createEl("h3", { text: "Ink rendering" });
-		containerEl.createEl("p", {
-			text: "These values are passed to perfect-freehand. Higher streamline/smoothing values make strokes cleaner but can add visual lag or soften corners.",
-			cls: "setting-item-description"
-		});
+		new Setting(containerEl)
+			.setName("Ink rendering")
+			.setDesc("These values are passed to perfect-freehand. Higher streamline/smoothing values make strokes cleaner but can add visual lag or soften corners.")
+			.setHeading();
 
 		const updateInkRenderSettings = async (patch: Partial<InkRenderSettings>): Promise<void> => {
 			await this.plugin.updateBehaviorSettings({

@@ -1,7 +1,7 @@
 {
   "name": "freedraw-pdf",
   "version": "0.12.0",
-  "description": "Freehand PDF annotation and notebook plugin for Obsidian",
+  "description": "Freehand PDF annotation and notebook plugin",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

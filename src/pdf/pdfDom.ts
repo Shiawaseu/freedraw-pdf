@@ -5,8 +5,8 @@ export function getOverlayHost(pageEl: HTMLElement): HTMLElement {
 	if (!candidate) {
 		return pageEl;
 	}
-	if (candidate instanceof HTMLCanvasElement) {
-		return candidate.parentElement instanceof HTMLElement ? candidate.parentElement : pageEl;
+	if (candidate.instanceOf(HTMLCanvasElement)) {
+		return candidate.parentElement?.instanceOf(HTMLElement) ? candidate.parentElement : pageEl;
 	}
 	return candidate;
 }

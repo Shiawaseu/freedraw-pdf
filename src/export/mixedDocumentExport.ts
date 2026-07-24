@@ -2,12 +2,12 @@ import { App, Notice, TFile } from "obsidian";
 import { renderAnnotationDocumentPage, renderAnnotationDocumentPageImages } from "../markdown/embedRender";
 import { getNotebookPageRenderDimensions } from "../notebook/pageModel";
 import { drawTemplatePageBackground } from "../notebook/templateCanvas";
-import { getNativePdfJs } from "../pdf/nativePdfJs";
+import { getNativePdfJs, type NativePdfDocument } from "../pdf/nativePdfJs";
 import { dataUrlToArrayBuffer, getBaseName } from "../utils/general";
 import { buildPdfFromJpegPages, type PdfImagePage } from "./simplePdfWriter";
 import type { AnnotationDocument, MixedPageEntry } from "../types";
 
-export interface MixedDocumentExportHost {}
+export type MixedDocumentExportHost = object;
 
 const EXPORT_PAGE_WIDTH_PX = 1600;
 const EXPORT_JPEG_QUALITY = 0.92;
@@ -66,7 +66,7 @@ async function renderSyntheticPageToCanvas(annotationDocument: AnnotationDocumen
 	return canvas;
 }
 
-async function renderPdfPageToCanvas(pdfDocument: any, annotationDocument: AnnotationDocument, pageNumber: number, includeAnnotations: boolean): Promise<HTMLCanvasElement> {
+async function renderPdfPageToCanvas(pdfDocument: NativePdfDocument, annotationDocument: AnnotationDocument, pageNumber: number, includeAnnotations: boolean): Promise<HTMLCanvasElement> {
 	const pdfPage = await pdfDocument.getPage(pageNumber);
 	const baseViewport = pdfPage.getViewport({ scale: 1 });
 	const scale = EXPORT_PAGE_WIDTH_PX / Math.max(baseViewport.width, 1);
