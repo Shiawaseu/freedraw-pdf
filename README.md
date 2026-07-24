@@ -66,6 +66,12 @@ After the plugin is accepted into the Obsidian community directory:
 - Exported PDFs are flattened output files intended for sharing or archiving.
 - The plugin is still early and should be tested with copies of important documents until your workflow is comfortable.
 
+## Privacy And Permissions
+
+- No account, payment, network service, ads, telemetry, or self-update mechanism is required.
+- Annotation files, copied embeds, imported images, and exported PDFs are written inside your Obsidian vault.
+- Inserting an image uses the browser file picker. The plugin only reads the image file you choose, then stores a vault copy for the annotation.
+
 ## Support
 
 Use GitHub issues to report bugs, request improvements, or ask questions about the plugin. For security-sensitive reports, follow the guidance in `SECURITY.md`.
@@ -97,3 +103,7 @@ styles.css
 ## License
 
 MIT
+
+## Credits
+
+- [perfect-freehand](https://github.com/steveruizok/perfect-freehand), used for freehand stroke rendering, is licensed under MIT.
