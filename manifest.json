@@ -1,6 +1,6 @@
 {
   "id": "freedraw-pdf",
-  "name": "freedraw-pdf",
+  "name": "Freedraw PDF",
   "version": "0.12.0",
   "minAppVersion": "0.9.7",
   "description": "Freehand PDF annotation workspace for Obsidian with vault-backed sidecar saves.",
