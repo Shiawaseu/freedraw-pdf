@@ -66,6 +66,10 @@ After the plugin is accepted into the Obsidian community directory:
 - Exported PDFs are flattened output files intended for sharing or archiving.
 - The plugin is still early and should be tested with copies of important documents until your workflow is comfortable.
 
+## Support
+
+Use GitHub issues to report bugs, request improvements, or ask questions about the plugin. For security-sensitive reports, follow the guidance in `SECURITY.md`.
+
 ## Development
 
 ```powershell

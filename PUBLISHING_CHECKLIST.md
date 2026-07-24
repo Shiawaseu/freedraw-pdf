@@ -10,7 +10,7 @@ Use this before creating a public repository, GitHub release, or Obsidian commun
 
 ## Sensitive Information
 
-- Search for local paths such as `C:\Users`, `OneDrive`, `Desktop`, vault names, usernames, and machine-specific paths.
+- Search for local user-home paths, synced-folder paths, desktop folders, vault names, usernames, and machine-specific paths.
 - Search for credentials and auth material such as API keys, tokens, cookies, private keys, passwords, connection strings, and bearer tokens.
 - Search for time, location, device, and environment details that do not need to be public.
 - Check Git history, not only the current working tree.
