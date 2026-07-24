@@ -3343,7 +3343,7 @@ export class AnnotatorNotebookView extends FileView {
 		group.appendChild(this.createNotebookIconButton("minus", "Line", this.currentTool === "line", () => this.setActiveTool("line")));
 		const activePresetKind = this.getNotebookActivePresetKind();
 		if (activePresetKind) {
-			const slots = createEl("div");
+			const slots = createDiv();
 			slots.className = "pdf-native-annotator-pen-slots";
 			slots.classList.add(`is-${activePresetKind}`);
 			for (const preset of this.toolState.getPresetsByKind(activePresetKind)) {
@@ -3415,7 +3415,7 @@ export class AnnotatorNotebookView extends FileView {
 			button.classList.add("is-active");
 		}
 		button.title = `${preset.label}: ${preset.kind} ${preset.width}`;
-		const preview = createEl("span");
+		const preview = createSpan();
 		preview.className = "pdf-native-annotator-preset-preview";
 		preview.setCssStyles({
 			height: `${Math.max(4, Math.min(14, preset.width))}px`,
@@ -3443,7 +3443,7 @@ export class AnnotatorNotebookView extends FileView {
 			button.classList.add("is-active");
 		}
 		button.title = label;
-		const inner = createEl("span");
+		const inner = createSpan();
 		inner.className = "pdf-native-annotator-swatch-inner";
 		inner.setCssStyles({ backgroundColor: color });
 		button.appendChild(inner);
@@ -3478,7 +3478,7 @@ export class AnnotatorNotebookView extends FileView {
 	private openNotebookColorPopover(anchor: HTMLElement): void {
 		this.closeNotebookTransientPopovers("color");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = createEl("div");
+		const popover = createDiv();
 		popover.className = "modal pdf-native-annotator-color-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Ink color" });
 		title.appendChild(this.createNotebookPopoverCloseButton(() => this.closeNotebookColorPopover()));
@@ -3569,7 +3569,7 @@ export class AnnotatorNotebookView extends FileView {
 	private openNotebookStrokePopover(anchor: HTMLElement): void {
 		this.closeNotebookTransientPopovers("stroke");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = createEl("div");
+		const popover = createDiv();
 		popover.className = "modal pdf-native-annotator-stroke-popover";
 		const targetTool = this.currentTool;
 		const initialWidth = this.shouldApplyStyleToNotebookSelection() ? this.getNotebookSelectionWidthValue() : this.getActiveWidth();
@@ -4717,7 +4717,7 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		this.closeNotebookTransientPopovers("rename");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = createEl("div");
+		const popover = createDiv();
 		popover.className = "modal pdf-native-annotator-rename-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Page name" });
 		title.appendChild(this.createNotebookPopoverCloseButton(() => this.closeNotebookRenamePopover()));
@@ -4792,7 +4792,7 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		this.closeNotebookTransientPopovers("paper");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = createEl("div");
+		const popover = createDiv();
 		popover.className = "modal pdf-native-annotator-color-popover pdf-native-annotator-paper-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Paper color" });
 		title.appendChild(this.createNotebookPopoverCloseButton(() => this.closeNotebookPaperColorPopover()));
@@ -4846,7 +4846,7 @@ export class AnnotatorNotebookView extends FileView {
 	private requestNotebookDangerConfirmation(title: string, message: string, confirmText: string, onConfirm: () => void | Promise<void>): void {
 		this.closeNotebookTransientPopovers("confirm");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = createEl("div");
+		const popover = createDiv();
 		popover.className = "modal pdf-native-annotator-confirm-popover";
 		const header = popover.createDiv({ cls: "pdf-native-annotator-confirm-title" });
 		setIcon(header.createSpan({ cls: "pdf-native-annotator-confirm-icon" }), "triangle-alert");
@@ -4903,7 +4903,7 @@ export class AnnotatorNotebookView extends FileView {
 		if (this.notebookPopoverBackdropEl) {
 			return;
 		}
-		const backdrop = createEl("div");
+		const backdrop = createDiv();
 		backdrop.className = "modal-container pdf-native-annotator-popover-backdrop";
 		backdrop.addEventListener("pointerdown", (event) => {
 			event.preventDefault();

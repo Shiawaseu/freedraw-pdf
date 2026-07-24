@@ -2,7 +2,7 @@ import { App, Notice, TFile } from "obsidian";
 import { ANNOTATION_FILE_SUFFIX } from "../config";
 import { getAnnotationRenderables } from "../annotation/renderOrder";
 import { generateId } from "../utils/general";
-import type { AnnotationDocument, AnnotationLoadInfo, ImageAnnotation, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
+import type { AnnotationDocument, AnnotationLoadInfo, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
 
 const DEFAULT_STROKE_REFERENCE_WIDTH = 1524;
 const MAX_STROKE_WIDTH_SCALE = 0.08;
