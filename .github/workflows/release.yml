@@ -54,7 +54,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body: |
-            freedraw-pdf ${GITHUB_REF_NAME}
+            freedraw-pdf ${{ github.ref_name }}
 
             - Built from the tagged source by GitHub Actions.
             - Includes manifest.json, main.js, and styles.css for Obsidian manual installation.
