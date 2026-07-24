@@ -51,7 +51,7 @@ async function renderSyntheticPageToCanvas(annotationDocument: AnnotationDocumen
 		throw new Error(`Missing inserted notebook page ${pageNumber}.`);
 	}
 	const dimensions = getNotebookPageRenderDimensions(syntheticPage.pageSize, EXPORT_PAGE_WIDTH_PX);
-	const canvas = document.createElement("canvas");
+	const canvas = createEl("canvas");
 	canvas.width = dimensions.width;
 	canvas.height = dimensions.height;
 	const context = canvas.getContext("2d");
@@ -71,7 +71,7 @@ async function renderPdfPageToCanvas(pdfDocument: NativePdfDocument, annotationD
 	const baseViewport = pdfPage.getViewport({ scale: 1 });
 	const scale = EXPORT_PAGE_WIDTH_PX / Math.max(baseViewport.width, 1);
 	const viewport = pdfPage.getViewport({ scale });
-	const canvas = document.createElement("canvas");
+	const canvas = createEl("canvas");
 	canvas.width = Math.max(1, Math.round(viewport.width));
 	canvas.height = Math.max(1, Math.round(viewport.height));
 	const context = canvas.getContext("2d");

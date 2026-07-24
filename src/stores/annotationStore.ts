@@ -149,29 +149,29 @@ export class AnnotationStore {
 				strokes: Array.isArray(parsed.strokes)
 					? parsed.strokes.map((stroke) => ({
 							...stroke,
-							page: (stroke as Partial<StrokeAnnotation>).page ?? 1
+							page: stroke.page ?? 1
 						}))
 					: [],
 				textItems: Array.isArray(parsed.textItems)
 					? parsed.textItems.map((item) => ({
 							...item,
-							page: (item as Partial<TextAnnotation>).page ?? 1
+							page: item.page ?? 1
 						}))
 					: [],
 				shapes: Array.isArray(parsed.shapes)
 					? parsed.shapes.map((shape) => ({
 							...shape,
-							page: (shape as Partial<ShapeAnnotation>).page ?? 1
+							page: shape.page ?? 1
 						}))
 					: [],
 				imageItems: Array.isArray(parsed.imageItems)
 					? parsed.imageItems.map((image) => ({
 							...image,
-							page: (image as Partial<ImageAnnotation>).page ?? 1,
-							x: Number.isFinite((image as Partial<ImageAnnotation>).x) ? (image as ImageAnnotation).x : 0.32,
-							y: Number.isFinite((image as Partial<ImageAnnotation>).y) ? (image as ImageAnnotation).y : 0.32,
-							widthScale: Number.isFinite((image as Partial<ImageAnnotation>).widthScale) ? (image as ImageAnnotation).widthScale : 0.36,
-							heightScale: Number.isFinite((image as Partial<ImageAnnotation>).heightScale) ? (image as ImageAnnotation).heightScale : 0.24
+							page: image.page ?? 1,
+							x: Number.isFinite(image.x) ? image.x : 0.32,
+							y: Number.isFinite(image.y) ? image.y : 0.32,
+							widthScale: Number.isFinite(image.widthScale) ? image.widthScale : 0.36,
+							heightScale: Number.isFinite(image.heightScale) ? image.heightScale : 0.24
 						}))
 					: [],
 				pdfPageTemplates: Array.isArray(parsed.pdfPageTemplates)

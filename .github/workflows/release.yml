@@ -53,6 +53,12 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          body: |
+            freedraw-pdf ${GITHUB_REF_NAME}
+
+            - Built from the tagged source by GitHub Actions.
+            - Includes manifest.json, main.js, and styles.css for Obsidian manual installation.
+            - Release artifacts are covered by GitHub artifact attestations.
           files: |
             manifest.json
             main.js

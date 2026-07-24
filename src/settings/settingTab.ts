@@ -1,6 +1,12 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
+type SettingDefinitionCompat = {
+	name: string;
+	desc?: string;
+	render: (setting: Setting) => void;
+};
+
 export interface PDFAnnotatorSettingsHost {
 	getInlineToolbarPreference(): boolean;
 	shouldShowRegionToolbarButton(): boolean;
@@ -20,6 +26,287 @@ export interface PDFAnnotatorSettingsHost {
 export class PDFAnnotatorSettingTab extends PluginSettingTab {
 	constructor(app: App, private readonly plugin: Plugin & PDFAnnotatorSettingsHost) {
 		super(app, plugin);
+	}
+
+	getSettingDefinitions(): SettingDefinitionCompat[] {
+		return [
+			{
+				name: "Prefer native PDF toolbar",
+				desc: "Mount controls into Obsidian's native PDF toolbar when available. If another PDF toolbar extension is active, freedraw-pdf can fall back to the floating toolbar to avoid control conflicts.",
+				render: (setting) => {
+					setting
+						.setName("Prefer native PDF toolbar")
+						.setDesc("Mount controls into Obsidian's native PDF toolbar when available. If another PDF toolbar extension is active, freedraw-pdf can fall back to the floating toolbar to avoid control conflicts.")
+						.addToggle((toggle) => {
+							toggle
+								.setValue(this.plugin.getInlineToolbarPreference())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ preferInlineToolbar: value });
+								});
+						});
+				}
+			},
+			{
+				name: "Show Region embed toolbar button",
+				desc: "Show the crop/screenshot-style region capture tool directly in the PDF toolbar. When off, use the freedraw-pdf overflow menu instead.",
+				render: (setting) => {
+					setting
+						.setName("Show Region embed toolbar button")
+						.setDesc("Show the crop/screenshot-style region capture tool directly in the PDF toolbar. When off, use the freedraw-pdf overflow menu instead.")
+						.addToggle((toggle) => {
+							toggle
+								.setValue(this.plugin.shouldShowRegionToolbarButton())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ showRegionToolbarButton: value });
+								});
+						});
+				}
+			},
+			{
+				name: "Show Copy embed toolbar button",
+				desc: "Show a direct Copy embed button after a region has been captured. When off, the same action remains available from the Region menu.",
+				render: (setting) => {
+					setting
+						.setName("Show Copy embed toolbar button")
+						.setDesc("Show a direct Copy embed button after a region has been captured. When off, the same action remains available from the Region menu.")
+						.addToggle((toggle) => {
+							toggle
+								.setValue(this.plugin.shouldShowCopyEmbedToolbarButton())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ showCopyEmbedToolbarButton: value });
+								});
+						});
+				}
+			},
+			{
+				name: "Show annotated embed header",
+				desc: "Show title and Open/Refresh/Copy block controls above annotated PDF embeds in markdown. Off by default for a clean screenshot-like display.",
+				render: (setting) => {
+					setting
+						.setName("Show annotated embed header")
+						.setDesc("Show title and Open/Refresh/Copy block controls above annotated PDF embeds in markdown. Off by default for a clean screenshot-like display.")
+						.addToggle((toggle) => {
+							toggle
+								.setValue(this.plugin.shouldShowAnnotatedEmbedHeader())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ showAnnotatedEmbedHeader: value });
+								});
+						});
+				}
+			},
+			{
+				name: "Ink input mode",
+				desc: "Controls which pointer inputs can draw. Use touch fallback only if your stylus is reported as touch; otherwise fingers stay available for scrolling.",
+				render: (setting) => {
+					setting
+						.setName("Ink input mode")
+						.setDesc("Controls which pointer inputs can draw. Use touch fallback only if your stylus is reported as touch; otherwise fingers stay available for scrolling.")
+						.addDropdown((dropdown) => {
+							dropdown
+								.addOption("pen-mouse-stylus-touch", "Pen + mouse + stylus-like touch")
+								.addOption("pen-mouse-only", "Pen + mouse only")
+								.addOption("allow-touch", "Allow touch drawing")
+								.setValue(this.plugin.getInkInputPolicy())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ inkInputPolicy: value as InkInputPolicy });
+								});
+						});
+				}
+			},
+			...this.getInkSettingDefinitions(),
+			...this.getDefaultToolSettingDefinitions()
+		];
+	}
+
+	private getInkSettingDefinitions(): SettingDefinitionCompat[] {
+		const updateInkRenderSettings = async (patch: Partial<InkRenderSettings>): Promise<void> => {
+			await this.plugin.updateBehaviorSettings({
+				inkRenderSettings: {
+					...this.plugin.getInkRenderSettings(),
+					...patch
+				}
+			});
+		};
+		return [
+			{
+				name: "Pressure mode",
+				desc: "Simulated pressure uses stroke speed. Stylus pressure uses real pointer pressure when available.",
+				render: (setting) => {
+					setting
+						.setName("Pressure mode")
+						.setDesc("Simulated pressure uses stroke speed. Stylus pressure uses real pointer pressure when available.")
+						.addDropdown((dropdown) => {
+							dropdown
+								.addOption("simulate", "Simulate pressure from mouse/stroke speed")
+								.addOption("stylus", "Use stylus pressure")
+								.setValue(this.plugin.getInkRenderSettings().pressureMode)
+								.onChange(async (value) => {
+									await updateInkRenderSettings({ pressureMode: value as InkPressureMode });
+								});
+						});
+				}
+			},
+			{
+				name: "Thinning",
+				desc: "How much pressure changes stroke width. Demo-like value: 0.5.",
+				render: (setting) => {
+					setting
+						.setName("Thinning")
+						.setDesc("How much pressure changes stroke width. Demo-like value: 0.5.")
+						.addSlider((slider) => {
+							slider
+								.setLimits(-1, 1, 0.05)
+								.setValue(this.plugin.getInkRenderSettings().thinning)
+								.setDynamicTooltip()
+								.onChange(async (value) => {
+									await updateInkRenderSettings({ thinning: value });
+								});
+						});
+				}
+			},
+			{
+				name: "Streamline",
+				desc: "How strongly the line follows a stabilized path. Higher values are smoother but less immediate.",
+				render: (setting) => {
+					setting
+						.setName("Streamline")
+						.setDesc("How strongly the line follows a stabilized path. Higher values are smoother but less immediate.")
+						.addSlider((slider) => {
+							slider
+								.setLimits(0, 1, 0.05)
+								.setValue(this.plugin.getInkRenderSettings().streamline)
+								.setDynamicTooltip()
+								.onChange(async (value) => {
+									await updateInkRenderSettings({ streamline: value });
+								});
+						});
+				}
+			},
+			{
+				name: "Smoothing",
+				desc: "How rounded the freehand outline becomes.",
+				render: (setting) => {
+					setting
+						.setName("Smoothing")
+						.setDesc("How rounded the freehand outline becomes.")
+						.addSlider((slider) => {
+							slider
+								.setLimits(0, 1, 0.05)
+								.setValue(this.plugin.getInkRenderSettings().smoothing)
+								.setDynamicTooltip()
+								.onChange(async (value) => {
+									await updateInkRenderSettings({ smoothing: value });
+								});
+						});
+				}
+			},
+			{
+				name: "Easing",
+				desc: "Pressure response curve used by the stroke outline.",
+				render: (setting) => {
+					setting
+						.setName("Easing")
+						.setDesc("Pressure response curve used by the stroke outline.")
+						.addDropdown((dropdown) => {
+							dropdown
+								.addOption("linear", "Linear")
+								.addOption("ease-in", "Ease in")
+								.addOption("ease-out", "Ease out")
+								.addOption("ease-in-out", "Ease in-out")
+								.setValue(this.plugin.getInkRenderSettings().easing)
+								.onChange(async (value) => {
+									await updateInkRenderSettings({ easing: value as InkEasingMode });
+								});
+						});
+				}
+			},
+			{
+				name: "Taper start",
+				desc: "Start taper length in pixels. 0 keeps the start capped.",
+				render: (setting) => this.renderInkSlider(setting, "Taper start", "Start taper length in pixels. 0 keeps the start capped.", "taperStart", updateInkRenderSettings)
+			},
+			{
+				name: "Taper end",
+				desc: "End taper length in pixels. 0 keeps the end capped.",
+				render: (setting) => this.renderInkSlider(setting, "Taper end", "End taper length in pixels. 0 keeps the end capped.", "taperEnd", updateInkRenderSettings)
+			},
+			{
+				name: "Autosave delay",
+				desc: "Delay before annotation edits are written to the sidecar file.",
+				render: (setting) => {
+					setting
+						.setName("Autosave delay")
+						.setDesc("Delay before annotation edits are written to the sidecar file.")
+						.addSlider((slider) => {
+							slider
+								.setLimits(200, 2000, 100)
+								.setValue(this.plugin.getAutosaveDelayMs())
+								.setDynamicTooltip()
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ autosaveDelayMs: value });
+								});
+						});
+				}
+			}
+		];
+	}
+
+	private renderInkSlider(
+		setting: Setting,
+		name: string,
+		desc: string,
+		key: "taperStart" | "taperEnd",
+		updateInkRenderSettings: (patch: Partial<InkRenderSettings>) => Promise<void>
+	): void {
+		setting
+			.setName(name)
+			.setDesc(desc)
+			.addSlider((slider) => {
+				slider
+					.setLimits(0, 120, 1)
+					.setValue(this.plugin.getInkRenderSettings()[key])
+					.setDynamicTooltip()
+					.onChange(async (value) => {
+						await updateInkRenderSettings({ [key]: value });
+					});
+			});
+	}
+
+	private getDefaultToolSettingDefinitions(): SettingDefinitionCompat[] {
+		return [
+			{
+				name: "Default pen width",
+				desc: "Starting width for new pen strokes.",
+				render: (setting) => this.renderDefaultWidthSetting(setting, "Default pen width", "Starting width for new pen strokes.", "pen", 1, 18)
+			},
+			{
+				name: "Default highlighter width",
+				desc: "Starting width for new highlighter strokes.",
+				render: (setting) => this.renderDefaultWidthSetting(setting, "Default highlighter width", "Starting width for new highlighter strokes.", "highlighter", 4, 30)
+			},
+			{
+				name: "Default eraser width",
+				desc: "Starting size for the eraser tool.",
+				render: (setting) => this.renderDefaultWidthSetting(setting, "Default eraser width", "Starting size for the eraser tool.", "eraser", 4, 36)
+			}
+		];
+	}
+
+	private renderDefaultWidthSetting(setting: Setting, name: string, desc: string, tool: "pen" | "highlighter" | "eraser", min: number, max: number): void {
+		setting
+			.setName(name)
+			.setDesc(desc)
+			.addSlider((slider) => {
+				slider
+					.setLimits(min, max, 1)
+					.setValue(this.plugin.getToolDefaults().widths[tool])
+					.setDynamicTooltip()
+					.onChange((value) => {
+						const next = this.plugin.getToolDefaults();
+						next.widths[tool] = value;
+						this.plugin.updateToolPreferences(next, this.plugin.getStoredPresets());
+					});
+			});
 	}
 
 	display(): void {

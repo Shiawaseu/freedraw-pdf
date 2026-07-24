@@ -118,9 +118,9 @@
 			color-mix(in srgb, var(--text-muted) 56%, transparent) 3px,
 			transparent 3px,
 			transparent 6px
-		) !important;
+		);
 	border: 1px solid color-mix(in srgb, var(--text-muted) 42%, transparent);
-	opacity: 1 !important;
+	opacity: 1;
 }
 
 .pdf-native-annotator-preset-slot {
@@ -294,7 +294,7 @@
 .modal.pdf-native-annotator-font-popover,
 .modal.pdf-native-annotator-stroke-popover,
 .modal.pdf-native-annotator-page-list-popover {
-	position: fixed !important;
+	position: fixed;
 	width: min(420px, calc(100vw - 24px));
 	max-height: var(--modal-height);
 	padding: var(--size-4-4) 0 0 0;
@@ -1276,24 +1276,24 @@
 	pointer-events: auto;
 }
 
-.pdf-native-annotator-inline-text-frame {
+.pdf-native-annotator-host .pdf-native-annotator-inline-text-frame {
 	position: absolute;
 	z-index: 9992;
 	min-width: 180px;
 	min-height: 36px;
-	border: 1.5px dashed #4da3ff !important;
+	border: 1.5px dashed #4da3ff;
 	border-radius: 0;
-	background: transparent !important;
-	box-shadow: none !important;
+	background: transparent;
+	box-shadow: none;
 	pointer-events: auto;
 	cursor: move;
 }
 
-.pdf-native-annotator-inline-text-frame.is-editing-selected {
+.pdf-native-annotator-host .pdf-native-annotator-inline-text-frame.is-editing-selected {
 	cursor: text;
 }
 
-.pdf-native-annotator-inline-text-editor {
+.pdf-native-annotator-host .pdf-native-annotator-inline-text-editor {
 	position: static;
 	display: block;
 	width: 100%;
@@ -1301,16 +1301,17 @@
 	min-height: 36px;
 	box-sizing: border-box;
 	padding: 6px 10px;
-	border: 0 !important;
-	background: transparent !important;
-	box-shadow: none !important;
+	border: 0;
+	background: transparent;
+	box-shadow: none;
 	line-height: 1.35;
 	resize: none;
 	overflow: hidden;
-	outline: none !important;
+	outline: none;
 	appearance: none;
 	white-space: pre-wrap;
 	overflow-wrap: break-word;
+	-webkit-text-fill-color: transparent;
 	caret-color: var(--interactive-accent);
 	cursor: text;
 }

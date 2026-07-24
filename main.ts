@@ -1,15 +1,12 @@
 import { App, FileView, MarkdownView, Menu, Modal, Notice, Plugin, Setting, TAbstractFile, TFile, WorkspaceLeaf, setIcon } from "obsidian";
-import { getInputMethod } from "./src/utils/deviceUtils";
 import { appendStrokePoints, drawSmoothInkStroke, getSmoothInkStrokePath, setInkRenderSettings } from "./src/ink/inkEngine";
-import { boundsOverlap, distanceBetween, distanceToSegment, getPolygonBounds, pathIntersectsPolygon, pointInPolygon, segmentsIntersect } from "./src/annotation/geometry";
-import { getAnnotationRenderables, getRenderableKey, getRenderableOrder, reorderRenderables } from "./src/annotation/renderOrder";
+import { boundsOverlap, distanceBetween, distanceToSegment, getPolygonBounds, segmentsIntersect } from "./src/annotation/geometry";
+import { getAnnotationRenderables, getRenderableOrder, reorderRenderables } from "./src/annotation/renderOrder";
 import type { AnnotationReorderDirection } from "./src/annotation/renderOrder";
-import { getShapeBounds, getStrokeBounds, getTextBounds, getTextLines } from "./src/annotation/bounds";
-import { cloneAnnotationsForPage, distanceBetweenSegments, distanceToBounds, distanceToRectEdge, distanceToShape, distanceToStroke, getClipboardPasteOffset, getSelectionBoxPoints, normalizeRect, parseRegionReference, pointInBounds, polygonIntersectsBounds, segmentIntersectsExpandedBounds, splitStrokeByEraser, splitStrokeByEraserPath } from "./src/annotation/interaction";
+import { getShapeBounds, getStrokeBounds, getTextBounds } from "./src/annotation/bounds";
+import { cloneAnnotationsForPage, distanceBetweenSegments, distanceToBounds, distanceToRectEdge, distanceToShape, distanceToStroke, getClipboardPasteOffset, getSelectionBoxPoints, normalizeRect, parseRegionReference, pointInBounds, segmentIntersectsExpandedBounds, splitStrokeByEraser, splitStrokeByEraserPath } from "./src/annotation/interaction";
 import { PAPER_TEMPLATE_DOT_COLOR, PAPER_TEMPLATE_GRID_COLOR, PAPER_TEMPLATE_LINE_COLOR, getPaperTemplateMetrics } from "./src/notebook/paperTemplates";
-import { LRUCache } from "./src/utils/lruCache";
 import {
-	DEFAULT_TOOL_PRESETS,
 	MAX_HISTORY,
 	NOTEBOOK_EXTENSION,
 	NOTEBOOK_VIEW_TYPE,
@@ -20,17 +17,16 @@ import {
 	SESSION_ROOT_CLASS,
 	TEXT_COLOR_PRESETS,
 	TEXT_FONT_FAMILIES,
-	TEXT_FONT_SIZES,
 	TOOLBAR_SELECTORS,
 	ZOOM_SETTLE_DELAY_MS
 } from "./src/config";
 import { AnnotationStore, cloneDocument, createEmptyDocument, normalizeDocumentStrokeScales, normalizeDocumentZIndexes } from "./src/stores/annotationStore";
-import { NotebookStore, cloneNotebookDocument, createEmptyNotebookDocument, normalizeNotebookZIndexes } from "./src/stores/notebookStore";
+import { NotebookStore, createEmptyNotebookDocument } from "./src/stores/notebookStore";
 import { AnnotatedEmbedController } from "./src/markdown/annotatedEmbedController";
 import { findScrollParent, getOverlayHost } from "./src/pdf/pdfDom";
 import { dataUrlToArrayBuffer, clamp, generateId, getBaseName } from "./src/utils/general";
 import { readClipboardText, writeClipboardText } from "./src/utils/clipboard";
-import { createPdfBackedNotebookPage, createTemplateNotebookPage, getNotebookPageKindLabel, getNotebookPageRenderDimensions, getNotebookPageSizeDimensions, getNotebookPageSizeLabel, getNotebookPageSourceSummary, getNotebookTemplateLabel } from "./src/notebook/pageModel";
+import { createTemplateNotebookPage, getNotebookPageRenderDimensions, getNotebookPageSizeDimensions, getNotebookPageSizeLabel, getNotebookTemplateLabel } from "./src/notebook/pageModel";
 import { createTemplatePageBackgroundDataUrl, drawTemplatePageBackground } from "./src/notebook/templateCanvas";
 import { getCoalescedPointerEvents, isInkDrawingTool, resolvePointerPressure, shouldIgnoreInkPointerEvent } from "./src/pointer/pointerInput";
 import { PDFAnnotatorSettingsController } from "./src/settings/settingsController";
@@ -61,10 +57,7 @@ import type {
 	LassoSelection,
 	MixedPageEntry,
 	NormalizedRect,
-	NotebookDocument,
-	NotebookHistoryState,
 	NotebookPage,
-	NotebookPageKind,
 	NotebookPageSize,
 	NotebookTemplate,
 	PDFAnnotatorSettings,
@@ -73,12 +66,10 @@ import type {
 	PdfPageTemplate,
 	PdfLikeView,
 	RegionReference,
-	RenderableAnnotation,
 	ResizeHandle,
 	SelectedTarget,
 	SelectionMode,
 	ShapeAnnotation,
-	ShapeTool,
 	StrokeAnnotation,
 	TextAnnotation,
 	ToolPreset,
@@ -1130,7 +1121,7 @@ class NativePdfAnnotatorSession {
 			return null;
 		}
 
-		const exportCanvas = document.createElement("canvas");
+		const exportCanvas = createEl("canvas");
 		const ratio = window.devicePixelRatio || 1;
 		const exportWidth = isHtmlCanvasElement(pdfCanvas) ? pdfCanvas.width : Math.max(1, Math.floor(surface.lastWidth * ratio));
 		const exportHeight = isHtmlCanvasElement(pdfCanvas) ? pdfCanvas.height : Math.max(1, Math.floor(surface.lastHeight * ratio));
@@ -1197,7 +1188,7 @@ class NativePdfAnnotatorSession {
 		const cropWidth = Math.max(1, cropRight - cropLeft);
 		const cropHeight = Math.max(1, cropBottom - cropTop);
 
-		const exportCanvas = document.createElement("canvas");
+		const exportCanvas = createEl("canvas");
 		exportCanvas.width = cropWidth;
 		exportCanvas.height = cropHeight;
 		const context = exportCanvas.getContext("2d");
@@ -1921,19 +1912,19 @@ class NativePdfAnnotatorSession {
 
 		viewContentEl.classList.add("pdf-native-annotator-host");
 
-		this.rootEl = document.createElement("div");
+		this.rootEl = createEl("div");
 		this.rootEl.className = SESSION_ROOT_CLASS;
 
-		this.toolbarEl = document.createElement("div");
+		this.toolbarEl = createEl("div");
 		this.toolbarEl.className = "pdf-native-annotator-toolbar";
 		this.toolbarEl.title = "Drag empty space to move the annotation toolbar";
 		this.toolbarEl.addEventListener("pointerdown", this.handleToolbarDragStart);
 
-		this.statusEl = document.createElement("div");
+		this.statusEl = createEl("div");
 		this.statusEl.className = "pdf-native-annotator-status";
 		this.statusEl.textContent = "";
 
-		this.toolPreviewEl = document.createElement("div");
+		this.toolPreviewEl = createEl("div");
 		this.toolPreviewEl.className = "pdf-native-annotator-tool-preview is-hidden";
 
 		this.rootEl.appendChild(this.toolbarEl);
@@ -2355,7 +2346,7 @@ class NativePdfAnnotatorSession {
 				const pageNumber = this.realPdfPageCount + index + 1;
 				let pageEl = pageContainer.querySelector<HTMLElement>(`.pdf-native-annotator-synthetic-page[data-page-number="${pageNumber}"]`);
 				if (!pageEl) {
-					pageEl = document.createElement("div");
+					pageEl = createEl("div");
 					pageEl.dataset.pageNumber = String(pageNumber);
 				}
 				pageEl.classList.remove("page");
@@ -2399,7 +2390,7 @@ class NativePdfAnnotatorSession {
 		}
 		let container = parentEl.querySelector<HTMLElement>(":scope > .pdf-native-annotator-synthetic-pages");
 		if (!container) {
-			container = document.createElement("div");
+			container = createEl("div");
 			container.className = "pdf-native-annotator-synthetic-pages";
 			anchorEl.insertAdjacentElement("afterend", container);
 		} else if (container.previousElementSibling !== anchorEl && container.parentElement === parentEl) {
@@ -2452,7 +2443,7 @@ class NativePdfAnnotatorSession {
 		this.setStyleIfChanged(pageEl, "backgroundColor", page.paperColor);
 		let hostEl = pageEl.querySelector<HTMLElement>(":scope > .canvasWrapper");
 		if (!hostEl) {
-			hostEl = document.createElement("div");
+			hostEl = createEl("div");
 			hostEl.className = "canvasWrapper pdf-native-annotator-synthetic-wrapper";
 			pageEl.appendChild(hostEl);
 		}
@@ -2461,7 +2452,7 @@ class NativePdfAnnotatorSession {
 		this.setStyleIfChanged(hostEl, "backgroundColor", page.paperColor);
 		let backgroundEl = hostEl.querySelector<HTMLElement>(":scope > .pdf-native-annotator-synthetic-background");
 		if (!backgroundEl) {
-			backgroundEl = document.createElement("div");
+			backgroundEl = createEl("div");
 			backgroundEl.className = "pdf-native-annotator-synthetic-background";
 			hostEl.prepend(backgroundEl);
 		}
@@ -2485,7 +2476,8 @@ class NativePdfAnnotatorSession {
 	}
 
 	private setStyleIfChanged(element: HTMLElement, property: keyof CSSStyleDeclaration, value: string): void {
-		element.setCssStyles({ [property]: value } as Partial<CSSStyleDeclaration>);
+		const cssProperty = String(property).replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+		element.setCssProps({ [cssProperty]: value });
 	}
 
 	private setStylePropertyIfChanged(element: HTMLElement, property: string, value: string): void {
@@ -2516,7 +2508,7 @@ class NativePdfAnnotatorSession {
 
 		let overlayEl = hostEl.querySelector<HTMLCanvasElement>(`:scope > .${OVERLAY_CLASS}`);
 		if (!overlayEl) {
-			overlayEl = document.createElement("canvas");
+			overlayEl = createEl("canvas");
 			overlayEl.className = OVERLAY_CLASS;
 			hostEl.appendChild(overlayEl);
 			overlayEl.addEventListener("pointerenter", this.handlePointerEnter);
@@ -2529,7 +2521,7 @@ class NativePdfAnnotatorSession {
 		overlayEl.dataset.pageNumber = String(pageNumber);
 		let transientEl = hostEl.querySelector<HTMLCanvasElement>(":scope > .pdf-native-annotator-transient");
 		if (!transientEl) {
-			transientEl = document.createElement("canvas");
+			transientEl = createEl("canvas");
 			transientEl.className = "pdf-native-annotator-transient";
 			hostEl.appendChild(transientEl);
 		}
@@ -2671,7 +2663,7 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		if (!backgroundEl) {
-			backgroundEl = document.createElement("div");
+			backgroundEl = createEl("div");
 			backgroundEl.className = "pdf-native-annotator-template-background pdf-native-annotator-synthetic-background";
 			surface.hostEl.insertBefore(backgroundEl, surface.overlayEl);
 		}
@@ -3068,7 +3060,7 @@ class NativePdfAnnotatorSession {
 			? ({ ...existingItem, boxWidthScale, boxHeightScale } as TextAnnotation)
 			: existingItem;
 		const layout = getInlineTextEditorLayout(point, surface.lastWidth, surface.lastHeight, layoutSource);
-		const frame = document.createElement("div");
+		const frame = createEl("div");
 		frame.className = "pdf-native-annotator-inline-text-frame";
 		if (editingExistingText) {
 			frame.classList.add("is-editing-selected");
@@ -3118,7 +3110,7 @@ class NativePdfAnnotatorSession {
 		frame.addEventListener("click", (event) => {
 			event.stopPropagation();
 		});
-		const editor = document.createElement("textarea");
+		const editor = createEl("textarea");
 		editor.className = "pdf-native-annotator-inline-text-editor";
 		editor.value = existingItem?.text ?? "";
 		const baseFontSize = existingItem?.fontScale
@@ -3142,7 +3134,6 @@ class NativePdfAnnotatorSession {
 			fontSize: `${baseFontSize}px`,
 			fontFamily: `"${fontFamily}", sans-serif`
 		});
-		editor.setCssProps({ "-webkit-text-fill-color": "transparent" });
 		frame.appendChild(editor);
 		this.addInlineTextFrameHandles(frame, editor, surface.lastWidth, surface.lastHeight);
 		surface.hostEl.appendChild(frame);
@@ -3285,7 +3276,7 @@ class NativePdfAnnotatorSession {
 			{ name: "w", cls: "is-w" }
 		];
 		for (const handle of handles) {
-			const handleEl = document.createElement("button");
+			const handleEl = createEl("button");
 			handleEl.type = "button";
 			handleEl.className = `pdf-native-annotator-inline-text-handle ${handle.cls}`;
 			handleEl.setAttribute("aria-label", `Resize text box ${handle.name}`);
@@ -3594,7 +3585,6 @@ class NativePdfAnnotatorSession {
 		if (this.inlineTextEditorEl) {
 			this.inlineTextEditorEl.dataset.textColor = color;
 			this.inlineTextEditorEl.setCssStyles({ color: "transparent" });
-			this.inlineTextEditorEl.setCssProps({ "-webkit-text-fill-color": "transparent" });
 			if (this.inlineTextPageNumber !== null) {
 				this.drawPageAnnotations(this.inlineTextPageNumber);
 			}
@@ -3631,7 +3621,6 @@ class NativePdfAnnotatorSession {
 			fontFamily: `"${this.currentTextFontFamily}", sans-serif`,
 			fontSize: `${this.currentTextFontSize}px`
 		});
-		this.inlineTextEditorEl.setCssProps({ "-webkit-text-fill-color": "transparent" });
 		const surface = this.inlineTextPageNumber ? this.pageSurfaces.get(this.inlineTextPageNumber) : null;
 		if (this.inlineTextEditorFrameEl?.classList.contains("is-editing-selected")) {
 			this.inlineTextEditorEl.setCssStyles({ height: "100%" });
@@ -4496,7 +4485,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.closeTransientPopovers("goto");
 		this.ensureTransientPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-rename-popover pdf-native-annotator-goto-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Go to page" });
 		title.appendChild(this.createPopoverCloseButton(() => this.closeGoToPagePopover()));
@@ -4564,7 +4553,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.closeTransientPopovers("pagelist");
 		this.ensureTransientPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-page-list-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Pages" });
 		title.appendChild(this.createPopoverCloseButton(() => this.closePageListPopover()));
@@ -4617,7 +4606,7 @@ class NativePdfAnnotatorSession {
 				return;
 			}
 			for (const entry of filteredEntries) {
-				const button = document.createElement("div");
+				const button = createEl("div");
 				button.className = "menu-item pdf-native-annotator-page-list-item";
 				button.setAttribute("role", "button");
 				button.setAttribute("aria-label", `${entry.label}. ${entry.detail}`);
@@ -4819,13 +4808,13 @@ class NativePdfAnnotatorSession {
 		}
 		this.closeTransientPopovers("paper");
 		this.ensureTransientPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-color-popover pdf-native-annotator-paper-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Paper color" });
 		title.appendChild(this.createPopoverCloseButton(() => this.closePaperColorPopover()));
 		const swatches = popover.createDiv({ cls: "pdf-native-annotator-color-popover-swatches" });
 		for (const preset of PAPER_COLOR_PRESETS) {
-			const swatch = document.createElement("button");
+			const swatch = createEl("button");
 			swatch.type = "button";
 			swatch.className = "pdf-native-annotator-swatch";
 			swatch.title = preset.label;
@@ -4843,7 +4832,7 @@ class NativePdfAnnotatorSession {
 		}
 		const customRow = popover.createDiv({ cls: "pdf-native-annotator-color-popover-custom" });
 		customRow.createSpan({ text: "Custom" });
-		const colorInput = document.createElement("input");
+		const colorInput = createEl("input");
 		colorInput.type = "color";
 		colorInput.value = page.paperColor;
 		colorInput.className = "pdf-native-annotator-color";
@@ -4877,7 +4866,7 @@ class NativePdfAnnotatorSession {
 		const anchorRect = anchor.getBoundingClientRect();
 		this.closeTransientPopovers("rename");
 		this.ensureTransientPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-rename-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Page name" });
 		title.appendChild(this.createPopoverCloseButton(() => this.closeRenamePopover()));
@@ -5198,7 +5187,7 @@ class NativePdfAnnotatorSession {
 	private requestDangerConfirmation(title: string, message: string, confirmText: string, onConfirm: () => void): void {
 		this.closeConfirmPopover();
 		this.ensureTransientPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-confirm-popover";
 		const header = popover.createDiv({ cls: "pdf-native-annotator-confirm-title" });
 		setIcon(header.createSpan({ cls: "pdf-native-annotator-confirm-icon" }), "triangle-alert");
@@ -5245,7 +5234,7 @@ class NativePdfAnnotatorSession {
 	private openTextStyleMenu(button: HTMLButtonElement): void {
 		this.closeTransientPopovers("font");
 		this.ensureTransientPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-font-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-font-popover-title", text: "Font" });
 		title.appendChild(this.createPopoverCloseButton(() => this.closeFontPopover()));
@@ -5311,7 +5300,7 @@ class NativePdfAnnotatorSession {
 		popover.createDiv({ cls: "pdf-native-annotator-font-popover-title", text: "Color" });
 		const colorList = popover.createDiv({ cls: "pdf-native-annotator-font-color-list" });
 		for (const preset of TEXT_COLOR_PRESETS) {
-			const colorButton = document.createElement("button");
+			const colorButton = createEl("button");
 			colorButton.type = "button";
 			colorButton.className = "pdf-native-annotator-font-color-option";
 			colorButton.title = preset.label;
@@ -5442,19 +5431,19 @@ class NativePdfAnnotatorSession {
 
 		this.toolbarEl.replaceChildren();
 
-		const leftGroup = document.createElement("div");
+		const leftGroup = createEl("div");
 		leftGroup.className = "pdf-native-annotator-group";
 
 		leftGroup.appendChild(this.createButton(this.annotationMode ? "Finish" : "Annotate", this.annotationMode, () => {
 			this.toggleAnnotationMode();
 		}));
 		if (!this.annotationMode) {
-			const readModeHint = document.createElement("span");
+			const readModeHint = createEl("span");
 			readModeHint.className = "pdf-native-annotator-read-mode-hint";
 			readModeHint.textContent = "Read mode";
 			leftGroup.appendChild(readModeHint);
 
-			const rightGroup = document.createElement("div");
+			const rightGroup = createEl("div");
 			rightGroup.className = "pdf-native-annotator-group";
 			const addPageButton = this.createButton("+ Page", false, () => {
 				this.addTemplatePageFromToolbar();
@@ -5557,7 +5546,7 @@ class NativePdfAnnotatorSession {
 
 		const activePresetKind = this.getActivePresetKind();
 		if (activePresetKind) {
-			const slots = document.createElement("div");
+			const slots = createEl("div");
 			slots.className = "pdf-native-annotator-pen-slots";
 			slots.classList.add(`is-${activePresetKind}`);
 			for (const preset of this.toolState.getPresetsByKind(activePresetKind)) {
@@ -5571,7 +5560,7 @@ class NativePdfAnnotatorSession {
 		}
 
 		if (this.isStrokeSizedTool() || this.shouldApplyStyleToSelection()) {
-			const strokeControl = document.createElement("div");
+			const strokeControl = createEl("div");
 			strokeControl.className = "pdf-native-annotator-stroke-control";
 			strokeControl.appendChild(this.createStrokeSizeButton());
 			leftGroup.appendChild(strokeControl);
@@ -5585,7 +5574,7 @@ class NativePdfAnnotatorSession {
 			leftGroup.appendChild(textStyleButton);
 		}
 
-		const rightGroup = document.createElement("div");
+		const rightGroup = createEl("div");
 		rightGroup.className = "pdf-native-annotator-group";
 
 		if (this.selectedTargets.length > 0) {
@@ -5633,7 +5622,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private createButton(label: string, active: boolean, onClick: () => void): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-button";
 		if (active) {
@@ -5682,7 +5671,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private createPageListActionButton(icon: string, label: string, onClick: (event: MouseEvent) => void): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-page-list-action clickable-icon";
 		button.setAttribute("aria-label", label);
@@ -5698,7 +5687,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private createPopoverCloseButton(onClick: () => void): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "modal-close-button pdf-native-annotator-popover-close";
 		button.setAttribute("aria-label", "Close");
@@ -5720,7 +5709,7 @@ class NativePdfAnnotatorSession {
 		if (this.transientPopoverBackdropEl) {
 			return;
 		}
-		const backdrop = document.createElement("div");
+		const backdrop = createEl("div");
 		backdrop.className = "modal-container pdf-native-annotator-popover-backdrop";
 		backdrop.addEventListener("pointerdown", (event) => {
 			event.preventDefault();
@@ -5814,7 +5803,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private createPresetButton(preset: ToolPreset): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-preset";
 		button.classList.add(`is-${preset.kind}`);
@@ -5823,14 +5812,18 @@ class NativePdfAnnotatorSession {
 		if (this.toolState.selectedPresetId === preset.id) {
 			button.classList.add("is-active");
 		}
-		const preview = document.createElement("span");
+		const preview = createEl("span");
 		preview.className = "pdf-native-annotator-preset-preview";
 		preview.setCssStyles({
-			backgroundColor: preset.kind === "eraser" ? "var(--text-muted)" : preset.color,
-			opacity: String(preset.opacity),
 			height: `${Math.max(4, Math.min(14, preset.width))}px`,
 			width: `${Math.max(18, Math.min(34, preset.width * 2.6))}px`
 		});
+		if (preset.kind !== "eraser") {
+			preview.setCssStyles({
+				backgroundColor: preset.color,
+				opacity: String(preset.opacity)
+			});
+		}
 		button.appendChild(preview);
 		this.bindToolbarButtonActivation(button, () => {
 			this.applyPreset(preset.id);
@@ -5839,7 +5832,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private createColorSwatch(color: string, label: string): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-swatch";
 		button.title = label;
@@ -5847,7 +5840,7 @@ class NativePdfAnnotatorSession {
 		if (this.currentColor.toLowerCase() === color.toLowerCase()) {
 			button.classList.add("is-active");
 		}
-		const inner = document.createElement("span");
+		const inner = createEl("span");
 		inner.className = "pdf-native-annotator-swatch-inner";
 		inner.setCssStyles({ backgroundColor: color });
 		button.appendChild(inner);
@@ -5862,7 +5855,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private createColorPickerButton(): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-color-button";
 		button.title = "Choose color";
@@ -5878,7 +5871,7 @@ class NativePdfAnnotatorSession {
 	private openColorPopover(anchor: HTMLElement): void {
 		this.closeTransientPopovers("color");
 		this.ensureTransientPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-color-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Ink color" });
 		title.appendChild(this.createPopoverCloseButton(() => this.closeColorPopover()));
@@ -5898,7 +5891,7 @@ class NativePdfAnnotatorSession {
 		}
 		const customRow = popover.createDiv({ cls: "pdf-native-annotator-color-popover-custom" });
 		customRow.createSpan({ text: "Custom" });
-		const colorInput = document.createElement("input");
+		const colorInput = createEl("input");
 		colorInput.type = "color";
 		colorInput.value = this.currentColor;
 		colorInput.className = "pdf-native-annotator-color";
@@ -5933,7 +5926,7 @@ class NativePdfAnnotatorSession {
 
 	private createStrokeSizeButton(): HTMLButtonElement {
 		const width = this.shouldApplyStyleToSelection() ? this.getSelectionWidthValue() : this.getActiveWidth();
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-stroke-button";
 		button.classList.add("is-active");
@@ -5993,7 +5986,7 @@ class NativePdfAnnotatorSession {
 	private openStrokeThicknessPopover(anchor: HTMLElement): void {
 		this.closeTransientPopovers("stroke");
 		this.ensureTransientPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-stroke-popover";
 		const targetTool = this.currentTool;
 		const initialWidth = this.shouldApplyStyleToSelection() ? this.getSelectionWidthValue() : this.getActiveWidth();
@@ -6574,7 +6567,7 @@ class NativePdfAnnotatorSession {
 	};
 
 	private isSessionEscapeEligible(event: KeyboardEvent): boolean {
-		if (!this.annotationMode || this.leaf !== this.plugin.app.workspace.activeLeaf) {
+		if (!this.annotationMode || !this.isLeafActive()) {
 			return false;
 		}
 		const target = event.target;
@@ -6597,7 +6590,7 @@ class NativePdfAnnotatorSession {
 	};
 
 	private isSessionKeyboardActive(event: KeyboardEvent): boolean {
-		if (!this.annotationMode || this.currentTool !== "select" || this.leaf !== this.plugin.app.workspace.activeLeaf) {
+		if (!this.annotationMode || this.currentTool !== "select" || !this.isLeafActive()) {
 			return false;
 		}
 		if (this.hasOpenTransientPopover()) {
@@ -6610,6 +6603,10 @@ class NativePdfAnnotatorSession {
 			}
 		}
 		return true;
+	}
+
+	private isLeafActive(): boolean {
+		return this.plugin.app.workspace.getActiveViewOfType(FileView)?.leaf === this.leaf;
 	}
 
 	private beginEditingSelectedTextTarget(target: SelectedTarget): void {
@@ -9825,7 +9822,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 			const renderDimensions = getNotebookPageRenderDimensions(templatePage.pageSize, BLANK_PDF_EXPORT_WIDTH_PX);
 			const pages = [];
 			for (let index = 0; index < pageCount; index += 1) {
-				const canvas = document.createElement("canvas");
+				const canvas = createEl("canvas");
 				canvas.width = renderDimensions.width;
 				canvas.height = renderDimensions.height;
 				const context = canvas.getContext("2d");
@@ -10108,11 +10105,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 	}
 
 	getActiveNotebookView(): AnnotatorNotebookView | null {
-		const leaf = this.app.workspace.activeLeaf;
-		if (!leaf) {
-			return null;
-		}
-		return leaf.view instanceof AnnotatorNotebookView ? leaf.view : null;
+		return this.app.workspace.getActiveViewOfType(AnnotatorNotebookView);
 	}
 
 	private createSession(leaf: WorkspaceLeaf): NativePdfAnnotatorSession {
@@ -10133,7 +10126,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 	}
 
 	private getActivePdfLeaf(): WorkspaceLeaf | null {
-		const leaf = this.app.workspace.activeLeaf;
+		const leaf = this.app.workspace.getActiveViewOfType(FileView)?.leaf ?? null;
 		if (!leaf) {
 			return null;
 		}

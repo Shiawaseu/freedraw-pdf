@@ -4,29 +4,11 @@ export async function writeClipboardText(text: string): Promise<void> {
 		electronClipboard.writeText(text);
 		return;
 	}
-	try {
+	if (navigator.clipboard?.writeText) {
 		await navigator.clipboard.writeText(text);
 		return;
-	} catch (error) {
-		console.warn("freedraw-pdf: navigator clipboard write failed, trying textarea fallback", error);
 	}
-	const textarea = document.createElement("textarea");
-	textarea.value = text;
-	textarea.setCssStyles({
-		position: "fixed",
-		left: "-10000px",
-		top: "0"
-	});
-	document.body.appendChild(textarea);
-	textarea.focus();
-	textarea.select();
-	try {
-		if (!document.execCommand("copy")) {
-			throw new Error("document.execCommand('copy') returned false");
-		}
-	} finally {
-		textarea.remove();
-	}
+	throw new Error("Clipboard write is unavailable in this Obsidian environment.");
 }
 
 export async function readClipboardText(): Promise<string> {
@@ -34,5 +16,8 @@ export async function readClipboardText(): Promise<string> {
 	if (electronClipboard?.readText) {
 		return electronClipboard.readText();
 	}
-	return navigator.clipboard.readText();
+	if (navigator.clipboard?.readText) {
+		return navigator.clipboard.readText();
+	}
+	throw new Error("Clipboard read is unavailable in this Obsidian environment.");
 }

@@ -1,7 +1,7 @@
 import { App, TFile } from "obsidian";
 import { normalizeAnnotationZIndexes } from "./annotationStore";
 import { generateId } from "../utils/general";
-import type { NotebookDocument, NotebookPage, NotebookPdfSource } from "../types";
+import type { NotebookDocument } from "../types";
 
 export function createEmptyNotebookDocument(title: string): NotebookDocument {
 	return {
@@ -54,30 +54,30 @@ export class NotebookStore {
 					id: page.id ?? generateId("page"),
 					title: page.title ?? `Page ${index + 1}`,
 					kind: page.kind === "pdf" ? "pdf" : "template",
-					sourceLabel: page.sourceLabel ?? (page.kind === "pdf" ? `PDF page ${((page as Partial<NotebookPage>).pdfSource as NotebookPdfSource | undefined)?.page ?? index + 1}` : "Template page"),
-					pdfSource: page.kind === "pdf" && (page as Partial<NotebookPage>).pdfSource
+					sourceLabel: page.sourceLabel ?? (page.kind === "pdf" ? `PDF page ${page.pdfSource?.page ?? index + 1}` : "Template page"),
+					pdfSource: page.kind === "pdf" && page.pdfSource
 						? {
-							filePath: ((page as Partial<NotebookPage>).pdfSource as NotebookPdfSource).filePath,
-							page: ((page as Partial<NotebookPage>).pdfSource as NotebookPdfSource).page
+							filePath: page.pdfSource.filePath,
+							page: page.pdfSource.page
 						}
 						: undefined,
 					template: page.template ?? "ruled",
 					paperColor: page.paperColor ?? "#fffdf7",
 					pageSize: page.pageSize ?? "a4",
-					strokes: Array.isArray((page as Partial<NotebookPage>).strokes)
-						? (page as Partial<NotebookPage>).strokes!.map((stroke) => ({
+					strokes: Array.isArray(page.strokes)
+						? page.strokes.map((stroke) => ({
 							...stroke,
 							page: 1
 						}))
 						: [],
-					textItems: Array.isArray((page as Partial<NotebookPage>).textItems)
-						? (page as Partial<NotebookPage>).textItems!.map((item) => ({
+					textItems: Array.isArray(page.textItems)
+						? page.textItems.map((item) => ({
 							...item,
 							page: 1
 						}))
 						: [],
-					shapes: Array.isArray((page as Partial<NotebookPage>).shapes)
-						? (page as Partial<NotebookPage>).shapes!.map((shape) => ({
+					shapes: Array.isArray(page.shapes)
+						? page.shapes.map((shape) => ({
 							...shape,
 							page: 1
 						}))

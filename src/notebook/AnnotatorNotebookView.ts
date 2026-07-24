@@ -4,10 +4,10 @@ import { appendStrokePoints, drawSmoothInkStroke } from "../ink/inkEngine";
 import { boundsOverlap, distanceBetween, distanceToSegment, getPolygonBounds, pathIntersectsPolygon, pointInPolygon } from "../annotation/geometry";
 import { getAnnotationRenderables, getRenderableOrder, reorderRenderables } from "../annotation/renderOrder";
 import type { AnnotationReorderDirection } from "../annotation/renderOrder";
-import { getShapeBounds, getStrokeBounds, getTextBounds, getTextLines } from "../annotation/bounds";
-import { cloneAnnotationsForPage, distanceToBounds, distanceToRectEdge, distanceToShape, distanceToStroke, getClipboardPasteOffset, getSelectionBoxPoints, pointInBounds, polygonIntersectsBounds, segmentIntersectsExpandedBounds, splitStrokeByEraser, splitStrokeByEraserPath } from "../annotation/interaction";
+import { getShapeBounds, getStrokeBounds, getTextBounds } from "../annotation/bounds";
+import { cloneAnnotationsForPage, distanceToShape, distanceToStroke, getClipboardPasteOffset, getSelectionBoxPoints, pointInBounds, polygonIntersectsBounds, segmentIntersectsExpandedBounds, splitStrokeByEraser, splitStrokeByEraserPath } from "../annotation/interaction";
 import { LRUCache } from "../utils/lruCache";
-import { MAX_HISTORY, NOTEBOOK_VIEW_TYPE, PAPER_COLOR_PRESETS, TEXT_COLOR_PRESETS, TEXT_FONT_FAMILIES, TEXT_FONT_SIZES } from "../config";
+import { MAX_HISTORY, NOTEBOOK_VIEW_TYPE, PAPER_COLOR_PRESETS, TEXT_COLOR_PRESETS, TEXT_FONT_FAMILIES } from "../config";
 import { NotebookStore, cloneNotebookDocument, normalizeNotebookZIndexes } from "../stores/notebookStore";
 import { dataUrlToArrayBuffer, clamp, generateId, getBaseName } from "../utils/general";
 import { writeClipboardText } from "../utils/clipboard";
@@ -15,9 +15,9 @@ import { createPdfBackedNotebookPage, createTemplateNotebookPage, getNotebookPag
 import { drawTemplatePageBackground } from "./templateCanvas";
 import { getNativePdfJs } from "../pdf/nativePdfJs";
 import { getCoalescedPointerEvents, resolvePointerPressure, shouldIgnoreInkPointerEvent } from "../pointer/pointerInput";
-import { INLINE_TEXT_BOX_PADDING_X, INLINE_TEXT_BOX_PADDING_Y, INLINE_TEXT_LINE_HEIGHT, getInlineTextEditorLayout, getWrappedCanvasTextLines, resizeInlineTextEditor } from "../text/textLayout";
+import { getInlineTextEditorLayout, getWrappedCanvasTextLines, resizeInlineTextEditor } from "../text/textLayout";
 import { PreviewStateController, ToolStateController, isShapeTool } from "../tools/toolState";
-import type { AnnotationClipboardPayload, AnnotationPoint, AnnotationTool, EraserMode, HitCandidate, LassoSelection, NormalizedRect, NotebookDocument, NotebookHistoryState, NotebookPage, NotebookPageSize, NotebookTemplate, RegionReference, ResizeHandle, SelectedTarget, SelectionMode, ShapeAnnotation, StrokeAnnotation, TextAnnotation, ToolPreset, ToolPresetKind, ToolStateSnapshot } from "../types";
+import type { AnnotationClipboardPayload, AnnotationPoint, AnnotationTool, EraserMode, HitCandidate, LassoSelection, NotebookDocument, NotebookHistoryState, NotebookPage, NotebookPageSize, NotebookTemplate, RegionReference, ResizeHandle, SelectedTarget, SelectionMode, ShapeAnnotation, StrokeAnnotation, TextAnnotation, ToolPreset, ToolPresetKind, ToolStateSnapshot } from "../types";
 
 interface NotebookPdfSessionBridge {
 	focusRegion(page: number, rect: RegionReference["rect"]): void;
@@ -563,7 +563,7 @@ export class AnnotatorNotebookView extends FileView {
 		if (!context || this.notebookInlineTextEditorEl) {
 			return;
 		}
-		const editor = document.createElement("textarea");
+		const editor = createEl("textarea");
 		editor.className = "annotator-notebook-inline-text-editor";
 		const initialText = existingItem?.text ?? "";
 		editor.value = initialText;
@@ -908,7 +908,7 @@ export class AnnotatorNotebookView extends FileView {
 			const baseViewport = pdfPage.getViewport({ scale: 1 });
 			const scale = Math.min(width / Math.max(baseViewport.width, 1), height / Math.max(baseViewport.height, 1));
 			const viewport = pdfPage.getViewport({ scale });
-			const canvas = document.createElement("canvas");
+			const canvas = createEl("canvas");
 			canvas.width = width;
 			canvas.height = height;
 			const context = canvas.getContext("2d");
@@ -2299,7 +2299,7 @@ export class AnnotatorNotebookView extends FileView {
 	}
 
 	private renderNotebookPageToCanvas(page: NotebookPage, width: number, height: number): HTMLCanvasElement {
-		const exportCanvas = document.createElement("canvas");
+		const exportCanvas = createEl("canvas");
 		exportCanvas.width = width;
 		exportCanvas.height = height;
 		const context = exportCanvas.getContext("2d");
@@ -2456,7 +2456,7 @@ export class AnnotatorNotebookView extends FileView {
 		const cropBottom = Math.min(exportCanvas.height, Math.ceil(bounds.bottom * exportCanvas.height) + 20);
 		const cropWidth = Math.max(1, cropRight - cropLeft);
 		const cropHeight = Math.max(1, cropBottom - cropTop);
-		const croppedCanvas = document.createElement("canvas");
+		const croppedCanvas = createEl("canvas");
 		croppedCanvas.width = cropWidth;
 		croppedCanvas.height = cropHeight;
 		const cropContext = croppedCanvas.getContext("2d");
@@ -3013,7 +3013,7 @@ export class AnnotatorNotebookView extends FileView {
 	};
 
 	private readonly handleNotebookKeyDown = (event: KeyboardEvent): void => {
-		if (this.app.workspace.activeLeaf !== this.leaf) {
+		if (this.app.workspace.getActiveViewOfType(AnnotatorNotebookView) !== this) {
 			return;
 		}
 		const target = event.target as HTMLElement | null;
@@ -3343,7 +3343,7 @@ export class AnnotatorNotebookView extends FileView {
 		group.appendChild(this.createNotebookIconButton("minus", "Line", this.currentTool === "line", () => this.setActiveTool("line")));
 		const activePresetKind = this.getNotebookActivePresetKind();
 		if (activePresetKind) {
-			const slots = document.createElement("div");
+			const slots = createEl("div");
 			slots.className = "pdf-native-annotator-pen-slots";
 			slots.classList.add(`is-${activePresetKind}`);
 			for (const preset of this.toolState.getPresetsByKind(activePresetKind)) {
@@ -3379,7 +3379,7 @@ export class AnnotatorNotebookView extends FileView {
 	}
 
 	private createNotebookIconButton(icon: string, label: string, active: boolean, onClick: () => void): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-button clickable-icon pdf-native-annotator-icon-button";
 		if (active) {
@@ -3394,7 +3394,7 @@ export class AnnotatorNotebookView extends FileView {
 	}
 
 	private createNotebookTextButton(label: string, active: boolean, onClick: () => void): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-button";
 		if (active) {
@@ -3407,7 +3407,7 @@ export class AnnotatorNotebookView extends FileView {
 	}
 
 	private createNotebookPresetButton(preset: ToolPreset): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-preset";
 		button.classList.add(`is-${preset.kind}`);
@@ -3415,14 +3415,18 @@ export class AnnotatorNotebookView extends FileView {
 			button.classList.add("is-active");
 		}
 		button.title = `${preset.label}: ${preset.kind} ${preset.width}`;
-		const preview = document.createElement("span");
+		const preview = createEl("span");
 		preview.className = "pdf-native-annotator-preset-preview";
 		preview.setCssStyles({
-			backgroundColor: preset.kind === "eraser" ? "var(--text-muted)" : preset.color,
-			opacity: String(preset.opacity),
 			height: `${Math.max(4, Math.min(14, preset.width))}px`,
 			width: `${Math.max(18, Math.min(34, preset.width * 2.6))}px`
 		});
+		if (preset.kind !== "eraser") {
+			preview.setCssStyles({
+				backgroundColor: preset.color,
+				opacity: String(preset.opacity)
+			});
+		}
 		button.appendChild(preview);
 		button.addEventListener("pointerdown", (event) => event.stopPropagation());
 		button.addEventListener("click", () => {
@@ -3432,14 +3436,14 @@ export class AnnotatorNotebookView extends FileView {
 	}
 
 	private createNotebookColorSwatch(color: string, label: string): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-swatch";
 		if (this.currentColor.toLowerCase() === color.toLowerCase()) {
 			button.classList.add("is-active");
 		}
 		button.title = label;
-		const inner = document.createElement("span");
+		const inner = createEl("span");
 		inner.className = "pdf-native-annotator-swatch-inner";
 		inner.setCssStyles({ backgroundColor: color });
 		button.appendChild(inner);
@@ -3456,7 +3460,7 @@ export class AnnotatorNotebookView extends FileView {
 	}
 
 	private createNotebookColorPickerButton(): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-color-button";
 		button.title = "Choose color";
@@ -3474,7 +3478,7 @@ export class AnnotatorNotebookView extends FileView {
 	private openNotebookColorPopover(anchor: HTMLElement): void {
 		this.closeNotebookTransientPopovers("color");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-color-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Ink color" });
 		title.appendChild(this.createNotebookPopoverCloseButton(() => this.closeNotebookColorPopover()));
@@ -3486,7 +3490,7 @@ export class AnnotatorNotebookView extends FileView {
 			{ color: "#6bcf8a", label: "Green" },
 			{ color: "#d38cff", label: "Violet" }
 		]) {
-			const swatch = document.createElement("button");
+			const swatch = createEl("button");
 			swatch.type = "button";
 			swatch.className = "pdf-native-annotator-swatch";
 			swatch.title = preset.label;
@@ -3505,7 +3509,7 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		const customRow = popover.createDiv({ cls: "pdf-native-annotator-color-popover-custom" });
 		customRow.createSpan({ text: "Custom" });
-		const colorInput = document.createElement("input");
+		const colorInput = createEl("input");
 		colorInput.type = "color";
 		colorInput.value = this.currentColor;
 		colorInput.className = "pdf-native-annotator-color";
@@ -3547,7 +3551,7 @@ export class AnnotatorNotebookView extends FileView {
 
 	private createNotebookStrokeSizeButton(): HTMLButtonElement {
 		const width = this.shouldApplyStyleToNotebookSelection() ? this.getNotebookSelectionWidthValue() : this.getActiveWidth();
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-stroke-button is-active";
 		button.title = `${this.getNotebookStrokeTitle()}: ${width.toFixed(1)} px`;
@@ -3565,7 +3569,7 @@ export class AnnotatorNotebookView extends FileView {
 	private openNotebookStrokePopover(anchor: HTMLElement): void {
 		this.closeNotebookTransientPopovers("stroke");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-stroke-popover";
 		const targetTool = this.currentTool;
 		const initialWidth = this.shouldApplyStyleToNotebookSelection() ? this.getNotebookSelectionWidthValue() : this.getActiveWidth();
@@ -4400,7 +4404,7 @@ export class AnnotatorNotebookView extends FileView {
 		nextPageButton.addEventListener("click", () => this.navigateNotebookPage(1));
 		const zoomOutButton = viewRow.createEl("button", { cls: "annotator-notebook-nav-button", text: "-" });
 		zoomOutButton.addEventListener("click", () => this.setNotebookZoom(this.getEffectiveNotebookZoom(activePage) - 0.1));
-		const zoomIndicator = viewRow.createDiv({
+		viewRow.createDiv({
 			cls: "annotator-notebook-page-position",
 			text: this.notebookZoomMode === "fit-width"
 				? `Fit ${Math.round(this.getEffectiveNotebookZoom(activePage) * 100)}%`
@@ -4713,7 +4717,7 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		this.closeNotebookTransientPopovers("rename");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-rename-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Page name" });
 		title.appendChild(this.createNotebookPopoverCloseButton(() => this.closeNotebookRenamePopover()));
@@ -4788,13 +4792,13 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		this.closeNotebookTransientPopovers("paper");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-color-popover pdf-native-annotator-paper-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Paper color" });
 		title.appendChild(this.createNotebookPopoverCloseButton(() => this.closeNotebookPaperColorPopover()));
 		const swatches = popover.createDiv({ cls: "pdf-native-annotator-color-popover-swatches" });
 		for (const preset of PAPER_COLOR_PRESETS) {
-			const swatch = document.createElement("button");
+			const swatch = createEl("button");
 			swatch.type = "button";
 			swatch.className = "pdf-native-annotator-swatch";
 			swatch.title = preset.label;
@@ -4810,7 +4814,7 @@ export class AnnotatorNotebookView extends FileView {
 		}
 		const customRow = popover.createDiv({ cls: "pdf-native-annotator-color-popover-custom" });
 		customRow.createSpan({ text: "Custom" });
-		const colorInput = document.createElement("input");
+		const colorInput = createEl("input");
 		colorInput.type = "color";
 		colorInput.value = page.paperColor;
 		colorInput.className = "pdf-native-annotator-color";
@@ -4842,7 +4846,7 @@ export class AnnotatorNotebookView extends FileView {
 	private requestNotebookDangerConfirmation(title: string, message: string, confirmText: string, onConfirm: () => void | Promise<void>): void {
 		this.closeNotebookTransientPopovers("confirm");
 		this.ensureNotebookPopoverBackdrop();
-		const popover = document.createElement("div");
+		const popover = createEl("div");
 		popover.className = "modal pdf-native-annotator-confirm-popover";
 		const header = popover.createDiv({ cls: "pdf-native-annotator-confirm-title" });
 		setIcon(header.createSpan({ cls: "pdf-native-annotator-confirm-icon" }), "triangle-alert");
@@ -4877,7 +4881,7 @@ export class AnnotatorNotebookView extends FileView {
 	}
 
 	private createNotebookPopoverCloseButton(onClick: () => void): HTMLButtonElement {
-		const button = document.createElement("button");
+		const button = createEl("button");
 		button.type = "button";
 		button.className = "modal-close-button pdf-native-annotator-popover-close";
 		button.setAttribute("aria-label", "Close");
@@ -4899,7 +4903,7 @@ export class AnnotatorNotebookView extends FileView {
 		if (this.notebookPopoverBackdropEl) {
 			return;
 		}
-		const backdrop = document.createElement("div");
+		const backdrop = createEl("div");
 		backdrop.className = "modal-container pdf-native-annotator-popover-backdrop";
 		backdrop.addEventListener("pointerdown", (event) => {
 			event.preventDefault();

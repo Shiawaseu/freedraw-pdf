@@ -19,7 +19,7 @@ export function normalizeRect(rect: NormalizedRect): NormalizedRect | null {
 }
 
 export function cloneCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
-	const canvas = document.createElement("canvas");
+	const canvas = createEl("canvas");
 	canvas.width = source.width;
 	canvas.height = source.height;
 	const context = canvas.getContext("2d");
@@ -40,7 +40,7 @@ export function cropCanvasToNormalizedRect(source: HTMLCanvasElement, rect: Norm
 	const cropBottom = Math.min(source.height, Math.ceil(normalized.bottom * source.height) + padding);
 	const cropWidth = Math.max(1, cropRight - cropLeft);
 	const cropHeight = Math.max(1, cropBottom - cropTop);
-	const canvas = document.createElement("canvas");
+	const canvas = createEl("canvas");
 	canvas.width = cropWidth;
 	canvas.height = cropHeight;
 	const context = canvas.getContext("2d");

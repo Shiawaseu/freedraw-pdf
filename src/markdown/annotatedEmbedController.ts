@@ -223,7 +223,7 @@ export class AnnotatedEmbedController {
 				const baseViewport = pdfPage.getViewport({ scale: 1 });
 				const scale = renderWidth / Math.max(baseViewport.width, 1);
 				const viewport = pdfPage.getViewport({ scale });
-				const canvas = document.createElement("canvas");
+				const canvas = createEl("canvas");
 				canvas.width = Math.max(1, Math.round(viewport.width));
 				canvas.height = Math.max(1, Math.round(viewport.height));
 				const context = canvas.getContext("2d");
@@ -260,7 +260,7 @@ export class AnnotatedEmbedController {
 				throw new Error(`Page ${pageNumber} is outside this PDF annotation session.`);
 			}
 			const dimensions = getNotebookPageSizeDimensions(syntheticPage.pageSize);
-			const canvas = document.createElement("canvas");
+			const canvas = createEl("canvas");
 			canvas.width = renderWidth;
 			canvas.height = Math.max(1, Math.round(renderWidth * dimensions.height / Math.max(dimensions.width, 1)));
 			const context = canvas.getContext("2d");

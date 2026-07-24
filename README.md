@@ -185,7 +185,7 @@ npm run build
 The GitHub release tag must exactly match `manifest.json` and `versions.json`. For example:
 
 ```text
-0.12.1
+0.12.2
 ```
 
 Release assets should include only:

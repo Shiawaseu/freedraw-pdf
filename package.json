@@ -1,6 +1,6 @@
 {
   "name": "freedraw-pdf",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "Freehand PDF annotation and notebook plugin",
   "main": "main.js",
   "scripts": {
