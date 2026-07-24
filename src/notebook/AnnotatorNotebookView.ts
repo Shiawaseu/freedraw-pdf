@@ -4308,7 +4308,7 @@ export class AnnotatorNotebookView extends FileView {
 		contentEl.empty();
 		contentEl.addClass("annotator-notebook-view");
 		if (!this.document || !this.file) {
-			contentEl.createEl("div", { text: "Notebook not loaded." });
+			contentEl.createDiv({ text: "Notebook not loaded." });
 			return;
 		}
 
