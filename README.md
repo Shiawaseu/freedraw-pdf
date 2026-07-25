@@ -1,17 +1,17 @@
 # Freedraw PDF
 
-Freedraw PDF adds a freehand annotation workspace to Obsidian's PDF workflow. It lets you draw on PDF pages, insert notebook pages between PDF pages, copy annotated embeds into notes, and export the combined result as a finished annotated PDF.
+Freedraw PDF adds a freehand annotation workspace to Obsidian's PDF workflow. It lets you draw on PDF pages, insert blank/template pages between PDF pages, copy annotated embeds into notes, and export the combined result as a finished annotated PDF.
 
 The plugin is designed for people who read, mark up, and study PDFs inside Obsidian and want handwritten notes to stay with the vault instead of living in a separate annotation app.
 
 ## Main Features
 
 - Draw on PDF pages with pen and highlighter tools.
-- Add text boxes, shapes, and images to PDF or notebook pages.
+- Add text boxes, shapes, and images to PDF pages or inserted blank/template pages.
 - Select, move, resize, duplicate, reorder, copy, cut, paste, and delete annotations.
 - Erase whole strokes or split strokes with the eraser path.
-- Insert temporary notebook pages before, after, or at the end of PDF documents.
-- Choose notebook page templates, paper sizes, and paper colors.
+- Insert temporary blank/template pages before, after, or at the end of PDF documents.
+- Choose inserted page templates, paper sizes, and paper colors.
 - Export PDF pages, inserted pages, and annotations as one flattened PDF.
 - Copy annotated page and selected-region embeds into Markdown notes with `freedraw-pdf` code blocks.
 - Keep annotation data in vault-backed sidecar files instead of overwriting the source PDF.
@@ -47,7 +47,7 @@ After the plugin is accepted into the Obsidian community directory:
 
 1. Open a PDF in Obsidian.
 2. Enable Freedraw PDF annotation mode from the command palette, ribbon, or PDF controls.
-3. Draw, highlight, add text, add shapes, insert images, or add notebook pages.
+3. Draw, highlight, add text, add shapes, insert images, or add blank/template pages.
 4. Use the page actions to navigate, duplicate, clear, or remove added pages.
 5. Copy Markdown embeds when you want annotated PDF content inside a note.
 6. Export an annotated mixed PDF when you need a finished document.
@@ -76,17 +76,17 @@ Add simple visual markers such as rectangles, ellipses, and lines. Shapes are us
 
 ### Text
 
-Add text boxes directly onto PDF or notebook pages. Text boxes can be positioned and resized like other annotation objects.
+Add text boxes directly onto PDF pages or inserted blank/template pages. Text boxes can be positioned and resized like other annotation objects.
 
 ### Images
 
 Insert an image onto the current page through the file picker. The selected image is copied into your vault and then used as an annotation item.
 
-## Notebook Pages
+## Inserted Pages
 
-Freedraw PDF can insert temporary notebook pages into the active PDF session. These pages appear between PDF pages while you work and are included when you export the mixed document.
+Freedraw PDF can insert temporary blank/template pages into the active PDF session. These pages appear between PDF pages while you work and are included when you export the mixed document.
 
-Notebook page options include:
+Inserted page options include:
 
 - Blank, ruled, grid, and dot templates.
 - A4, letter, compact, and long page sizes.
@@ -115,7 +115,7 @@ The embed feature is useful for study notes, research summaries, lecture notes, 
 The export action creates a new flattened PDF that combines:
 
 - Original PDF pages.
-- Inserted notebook pages.
+- Inserted blank/template pages.
 - Freehand strokes.
 - Highlights.
 - Text boxes.

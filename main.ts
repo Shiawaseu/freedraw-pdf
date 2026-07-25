@@ -8,8 +8,6 @@ import { cloneAnnotationsForPage, distanceBetweenSegments, distanceToBounds, dis
 import { PAPER_TEMPLATE_DOT_COLOR, PAPER_TEMPLATE_GRID_COLOR, PAPER_TEMPLATE_LINE_COLOR, getPaperTemplateMetrics } from "./src/notebook/paperTemplates";
 import {
 	MAX_HISTORY,
-	NOTEBOOK_EXTENSION,
-	NOTEBOOK_VIEW_TYPE,
 	OVERLAY_CLASS,
 	PAGE_SELECTORS,
 	PAGE_VIRTUALIZATION_MARGIN,
@@ -21,7 +19,6 @@ import {
 	ZOOM_SETTLE_DELAY_MS
 } from "./src/config";
 import { AnnotationStore, cloneDocument, createEmptyDocument, normalizeDocumentStrokeScales, normalizeDocumentZIndexes } from "./src/stores/annotationStore";
-import { NotebookStore, createEmptyNotebookDocument } from "./src/stores/notebookStore";
 import { AnnotatedEmbedController } from "./src/markdown/annotatedEmbedController";
 import { findScrollParent, getOverlayHost } from "./src/pdf/pdfDom";
 import { dataUrlToArrayBuffer, clamp, generateId, getBaseName } from "./src/utils/general";
@@ -31,7 +28,6 @@ import { createTemplatePageBackgroundDataUrl, drawTemplatePageBackground } from 
 import { getCoalescedPointerEvents, isInkDrawingTool, resolvePointerPressure, shouldIgnoreInkPointerEvent } from "./src/pointer/pointerInput";
 import { PDFAnnotatorSettingsController } from "./src/settings/settingsController";
 import { PDFAnnotatorSettingTab } from "./src/settings/settingTab";
-import { registerNotebookCommands } from "./src/commands/notebookCommands";
 import { createNativeMixedWorkingPdf, exportAnnotatedMixedDocumentPdf } from "./src/export/mixedDocumentExport";
 import { buildPdfFromJpegPages } from "./src/export/simplePdfWriter";
 import {
@@ -77,8 +73,6 @@ import type {
 	ToolStateSnapshot
 } from "./src/types";
 
-import { AnnotatorNotebookView } from "./src/notebook/AnnotatorNotebookView";
-
 const DEFAULT_STROKE_REFERENCE_WIDTH = 1524;
 const MAX_STROKE_WIDTH_SCALE = 0.08;
 const MAX_TEXT_FONT_SCALE = 0.08;
@@ -117,6 +111,10 @@ interface NativeInsertPageOptions {
 	paperColor: string;
 }
 
+type HistoryEntry =
+	| { kind: "document"; document: AnnotationDocument }
+	| { kind: "stroke-add"; stroke: StrokeAnnotation };
+
 interface NativeInsertPageLocation {
 	insertIndex: number;
 	anchor: number;
@@ -142,7 +140,7 @@ class BlankAnnotatablePdfModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.createEl("p", {
-			text: "Creates a real PDF in the vault and opens it in Obsidian's native PDF viewer. No .annotbook file is used.",
+			text: "Creates a real PDF in the vault and opens it in Obsidian's native PDF viewer.",
 			cls: "setting-item-description"
 		});
 
@@ -238,18 +236,18 @@ class NativeInsertPageModal extends Modal {
 	) {
 		super(app);
 		this.options = { ...defaults };
-		this.titleEl.setText(this.mode === "temporary" ? "Add notebook page" : "Insert native notebook page");
+		this.titleEl.setText(this.mode === "temporary" ? "Add template page" : "Insert native template page");
 		this.modalEl.addClass("pdf-native-annotator-native-modal");
 	}
 
 	onOpen(): void {
 		const { contentEl } = this;
-		this.titleEl.setText(this.mode === "temporary" ? "Add notebook page" : "Insert native notebook page");
+		this.titleEl.setText(this.mode === "temporary" ? "Add template page" : "Insert native template page");
 		contentEl.empty();
 		contentEl.createEl("p", {
 			text: this.mode === "temporary"
-				? `Adds a temporary notebook page ${this.position} ${this.anchorLabel}. It stays editable and is included when you export the finished PDF.`
-				: `Creates a new native working PDF with this notebook page inserted ${this.position} ${this.anchorLabel}. Existing annotations are remapped and remain editable.`,
+				? `Adds a temporary template page ${this.position} ${this.anchorLabel}. It stays editable and is included when you export the finished PDF.`
+				: `Creates a new native working PDF with this template page inserted ${this.position} ${this.anchorLabel}. Existing annotations are remapped and remain editable.`,
 			cls: "setting-item-description"
 		});
 
@@ -258,7 +256,7 @@ class NativeInsertPageModal extends Modal {
 			.addText((text) => {
 				text.setValue(this.options.title);
 				text.onChange((value) => {
-					this.options.title = value.trim() || "Inserted notebook page";
+					this.options.title = value.trim() || "Inserted page";
 				});
 			});
 
@@ -332,7 +330,7 @@ class ImageInsertModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.createEl("p", {
-			text: "Choose an image file to place on the current PDF or notebook page.",
+			text: "Choose an image file to place on the current PDF or template page.",
 			cls: "setting-item-description"
 		});
 
@@ -436,8 +434,8 @@ class NativePdfAnnotatorSession {
 	private readonly previewState = new PreviewStateController();
 	private annotationMode = false;
 	private isDirty = false;
-	private undoStack: AnnotationDocument[] = [];
-	private redoStack: AnnotationDocument[] = [];
+	private undoStack: HistoryEntry[] = [];
+	private redoStack: HistoryEntry[] = [];
 	private pageSurfaces = new Map<number, PageSurface>();
 	private pageResizeObservers = new Map<number, ResizeObserver>();
 	private pendingRedrawPages = new Set<number>();
@@ -446,6 +444,8 @@ class NativePdfAnnotatorSession {
 	private imageElementCache = new Map<string, HTMLImageElement>();
 	private zoomingPages = new Set<number>();
 	private annotationPageCache: Map<number, PageAnnotationBucket> | null = null;
+	private perfWindowStartedAt = 0;
+	private perfStats = new Map<string, { count: number; total: number; max: number }>();
 	private realPdfPageCount = 0;
 	private syntheticPageContainer: HTMLElement | null = null;
 	private isSyncingSyntheticPages = false;
@@ -570,7 +570,7 @@ class NativePdfAnnotatorSession {
 				const temporaryPageCount = this.getTemporarySidecarPageCount();
 				this.refreshStatus(
 					temporaryPageCount > 0
-						? `${temporaryPageCount} temporary notebook page${temporaryPageCount === 1 ? "" : "s"} found. Export when you want a finished PDF.`
+						? `${temporaryPageCount} temporary template page${temporaryPageCount === 1 ? "" : "s"} found. Export when you want a finished PDF.`
 						: `Attached to native PDF viewer: ${nextFile.name}`,
 					temporaryPageCount > 0 ? 8000 : 2500
 				);
@@ -597,7 +597,9 @@ class NativePdfAnnotatorSession {
 		}
 
 		try {
+			const start = performance.now();
 			await this.store.save(this.file, this.annotationDocument);
+			this.notePerf("save", performance.now() - start);
 			this.isDirty = false;
 			this.refreshStatus(`Saved ${this.store.getSidecarPath(this.file)}`);
 		} catch (error) {
@@ -987,7 +989,7 @@ class NativePdfAnnotatorSession {
 	private getNativeInsertPageDefaults(position: "before" | "after", location = this.getNativeInsertPageLocation(position)): NativeInsertPageOptions {
 		const currentSyntheticPage = this.getCurrentSyntheticPage();
 		return {
-			title: `Notebook page ${position} ${location.anchorLabel}`,
+			title: `Inserted page ${position} ${location.anchorLabel}`,
 			template: currentSyntheticPage?.template ?? "ruled",
 			pageSize: currentSyntheticPage?.pageSize ?? "a4",
 			paperColor: currentSyntheticPage?.paperColor ?? "#fffdf7"
@@ -1038,7 +1040,7 @@ class NativePdfAnnotatorSession {
 			sourceDocument.appendedPages = [];
 		}
 		const fallbackOptions: NativeInsertPageOptions = {
-			title: `Notebook page after ${location.anchorLabel}`,
+			title: `Inserted page after ${location.anchorLabel}`,
 			template: this.getCurrentSyntheticPage()?.template ?? "ruled",
 			pageSize: this.getCurrentSyntheticPage()?.pageSize ?? "a4",
 			paperColor: this.getCurrentSyntheticPage()?.paperColor ?? "#fffdf7"
@@ -1585,7 +1587,7 @@ class NativePdfAnnotatorSession {
 		const shouldRestoreHistory =
 			this.erasingSession ||
 			(this.currentTool === "select" && this.dragAnchor !== null && this.currentLasso === null);
-		const previous = shouldRestoreHistory ? this.undoStack.pop() : null;
+		const previousEntry = shouldRestoreHistory ? this.undoStack.pop() : null;
 		const affectedPage = this.pointerPage ?? this.currentStroke?.page ?? this.currentShape?.page ?? this.currentLasso?.page ?? this.currentPage;
 		this.currentStroke = null;
 		this.currentShape = null;
@@ -1596,14 +1598,17 @@ class NativePdfAnnotatorSession {
 		this.erasingSession = false;
 		this.lastEraserPoint = null;
 		this.pointerPage = null;
-		if (previous) {
-			this.annotationDocument = previous;
+		if (previousEntry?.kind === "document") {
+			this.annotationDocument = previousEntry.document;
 			this.invalidateAnnotationPageCache();
 			this.isDirty = true;
 			this.scheduleSave();
 			this.drawAllAnnotations();
 		} else {
-			if ((this.currentTool === "pen" || this.currentTool === "highlighter" || isShapeTool(this.currentTool)) && this.undoStack.length > 0) {
+			if (previousEntry) {
+				this.undoStack.push(previousEntry);
+			}
+			if (isShapeTool(this.currentTool) && this.undoStack.length > 0) {
 				this.undoStack.pop();
 			}
 			this.drawPageAnnotations(affectedPage);
@@ -1782,15 +1787,24 @@ class NativePdfAnnotatorSession {
 
 	undo(): void {
 		if (!this.annotationDocument || this.undoStack.length === 0) {
+			new Notice("Nothing to undo", 1200);
 			this.refreshStatus("Nothing to undo");
 			return;
 		}
-		this.redoStack.push(cloneDocument(this.annotationDocument));
-		const previous = this.undoStack.pop();
-		if (!previous) {
+		const entry = this.undoStack.pop();
+		if (!entry) {
 			return;
 		}
-		this.annotationDocument = previous;
+		if (entry.kind === "document") {
+			this.redoStack.push({ kind: "document", document: cloneDocument(this.annotationDocument) });
+			this.annotationDocument = entry.document;
+		} else {
+			const strokeIndex = this.annotationDocument.strokes.findIndex((stroke) => stroke.id === entry.stroke.id);
+			if (strokeIndex >= 0) {
+				this.annotationDocument.strokes.splice(strokeIndex, 1);
+			}
+			this.redoStack.push({ kind: "stroke-add", stroke: this.cloneStroke(entry.stroke) });
+		}
 		this.lastSelectionRegion = null;
 		this.invalidateAnnotationPageCache();
 		this.isDirty = true;
@@ -1798,20 +1812,29 @@ class NativePdfAnnotatorSession {
 		this.scheduleSyncPages();
 		this.drawAllAnnotations();
 		this.refreshToolbar();
+		new Notice(`Undo applied (${this.annotationDocument.strokes.length} strokes)`, 1600);
 		this.refreshStatus("Undo applied");
 	}
 
 	redo(): void {
 		if (!this.annotationDocument || this.redoStack.length === 0) {
+			new Notice("Nothing to redo", 1200);
 			this.refreshStatus("Nothing to redo");
 			return;
 		}
-		this.undoStack.push(cloneDocument(this.annotationDocument));
-		const next = this.redoStack.pop();
-		if (!next) {
+		const entry = this.redoStack.pop();
+		if (!entry) {
 			return;
 		}
-		this.annotationDocument = next;
+		if (entry.kind === "document") {
+			this.undoStack.push({ kind: "document", document: cloneDocument(this.annotationDocument) });
+			this.annotationDocument = entry.document;
+		} else {
+			this.undoStack.push({ kind: "stroke-add", stroke: this.cloneStroke(entry.stroke) });
+			if (!this.annotationDocument.strokes.some((stroke) => stroke.id === entry.stroke.id)) {
+				this.annotationDocument.strokes.push(this.cloneStroke(entry.stroke));
+			}
+		}
 		this.lastSelectionRegion = null;
 		this.invalidateAnnotationPageCache();
 		this.isDirty = true;
@@ -1819,7 +1842,20 @@ class NativePdfAnnotatorSession {
 		this.scheduleSyncPages();
 		this.drawAllAnnotations();
 		this.refreshToolbar();
+		new Notice(`Redo applied (${this.annotationDocument.strokes.length} strokes)`, 1600);
 		this.refreshStatus("Redo applied");
+	}
+
+	private undoFromToolbar(): void {
+		this.finishSessionInlineTextEditor(true);
+		this.forceFinishStalePdfInteraction("Finished active annotation before undo");
+		this.undo();
+	}
+
+	private redoFromToolbar(): void {
+		this.finishSessionInlineTextEditor(true);
+		this.forceFinishStalePdfInteraction("Finished active annotation before redo");
+		this.redo();
 	}
 
 	private getPdfFile(): TFile | null {
@@ -2044,18 +2080,18 @@ class NativePdfAnnotatorSession {
 			if (!externalChange) {
 				return;
 			}
+			this.notePerf("mutation");
 			this.mountUi();
 			this.scheduleLayoutRefresh();
 		});
 		this.mutationObserver.observe(viewContentEl, {
 			childList: true,
-			subtree: true,
-			attributes: true,
-			attributeFilter: ["class", "style", "width", "height", "data-loaded", "data-page-number"]
+			subtree: true
 		});
 
 		if (typeof ResizeObserver !== "undefined") {
 			this.viewResizeObserver = new ResizeObserver(() => {
+				this.notePerf("view resize");
 				this.scheduleRepositionOpenPopovers();
 				this.scheduleLayoutRefresh();
 			});
@@ -2160,7 +2196,7 @@ class NativePdfAnnotatorSession {
 		});
 	}
 
-	private syncPages(): void {
+	private syncPages(redrawAnnotations = true): void {
 		if (!this.file || !this.annotationDocument) {
 			return;
 		}
@@ -2212,8 +2248,10 @@ class NativePdfAnnotatorSession {
 		this.bindScrollParent((realPageEls[0] ?? rawRealPageEls[0]).pageEl);
 		this.updateCurrentPageFromScroll();
 		this.updateVisiblePageRange();
-		this.drawAllAnnotations();
-		this.refreshToolbar();
+		if (redrawAnnotations) {
+			this.drawAllAnnotations();
+			this.refreshToolbar();
+		}
 	}
 
 	private applyDeletedPdfPageVisibility(realPageEls: { pageEl: HTMLElement; pageNumber: number }[]): void {
@@ -2477,10 +2515,16 @@ class NativePdfAnnotatorSession {
 
 	private setStyleIfChanged(element: HTMLElement, property: keyof CSSStyleDeclaration, value: string): void {
 		const cssProperty = String(property).replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`);
+		if (element.style.getPropertyValue(cssProperty) === value) {
+			return;
+		}
 		element.setCssProps({ [cssProperty]: value });
 	}
 
 	private setStylePropertyIfChanged(element: HTMLElement, property: string, value: string): void {
+		if (element.style.getPropertyValue(property) === value) {
+			return;
+		}
 		element.setCssProps({ [property]: value });
 	}
 
@@ -2564,6 +2608,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.pageResizeObservers.get(surface.pageNumber)?.disconnect();
 		const observer = new ResizeObserver(() => {
+			this.notePerf("page resize");
 			this.previewResizeOverlay(surface);
 			this.markPageZooming(surface.pageNumber);
 		});
@@ -2572,8 +2617,8 @@ class NativePdfAnnotatorSession {
 	}
 
 	private markPageZooming(pageNumber: number): void {
+		this.notePerf("page zoom");
 		this.zoomingPages.add(pageNumber);
-		this.scheduleLayoutRefresh();
 		const surface = this.pageSurfaces.get(pageNumber);
 		if (surface) {
 			surface.overlayEl.setCssStyles({ opacity: "0.96" });
@@ -2770,16 +2815,16 @@ class NativePdfAnnotatorSession {
 		if (!this.file || !this.annotationDocument) {
 			return;
 		}
-		this.scheduleSyncPages();
+		this.notePerf("layout request");
 		this.clearLayoutRefreshHandles();
-		for (const delayMs of [80, 240, 600, 1200]) {
-			const handle = window.setTimeout(() => {
-				this.layoutRefreshHandles = this.layoutRefreshHandles.filter((pendingHandle) => pendingHandle !== handle);
-				this.syncPages();
-				this.forceRedrawAllAnnotations();
-			}, delayMs);
-			this.layoutRefreshHandles.push(handle);
-		}
+		const handle = window.setTimeout(() => {
+			const start = performance.now();
+			this.layoutRefreshHandles = this.layoutRefreshHandles.filter((pendingHandle) => pendingHandle !== handle);
+			this.syncPages(false);
+			this.forceRedrawVisibleAnnotations();
+			this.notePerf("layout visible", performance.now() - start);
+		}, 220);
+		this.layoutRefreshHandles.push(handle);
 	}
 
 	private forceRedrawAllAnnotations(): void {
@@ -4058,7 +4103,7 @@ class NativePdfAnnotatorSession {
 			anchor: this.getSyntheticPageInsertAfterPdfPage(target.page),
 			anchorLabel: target.page.title.trim() || `added page ${target.pageNumber}`
 		}, {
-			title: `Notebook page after ${target.page.title.trim() || `added page ${target.pageNumber}`}`,
+			title: `Inserted page after ${target.page.title.trim() || `added page ${target.pageNumber}`}`,
 			template: target.page.template,
 			pageSize: target.page.pageSize,
 			paperColor: target.page.paperColor
@@ -4077,7 +4122,7 @@ class NativePdfAnnotatorSession {
 			anchor: this.getSyntheticPageInsertAfterPdfPage(target.page),
 			anchorLabel: target.page.title.trim() || `added page ${target.pageNumber}`
 		}, {
-			title: `Notebook page after ${target.page.title.trim() || `added page ${target.pageNumber}`}`,
+			title: `Inserted page after ${target.page.title.trim() || `added page ${target.pageNumber}`}`,
 			template: target.page.template,
 			pageSize: target.page.pageSize,
 			paperColor: target.page.paperColor
@@ -4429,13 +4474,13 @@ class NativePdfAnnotatorSession {
 				.setTitle(`${currentSyntheticPage.title} (${getNotebookTemplateLabel(currentSyntheticPage.template)}, ${getNotebookPageSizeLabel(currentSyntheticPage.pageSize)})`)
 				.setDisabled(true));
 			menu.addSeparator();
-			menu.addItem((item) => item.setTitle("Add notebook page before...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("before")));
-			menu.addItem((item) => item.setTitle("Add notebook page after...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("after")));
+			menu.addItem((item) => item.setTitle("Add template page before...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("before")));
+			menu.addItem((item) => item.setTitle("Add template page after...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("after")));
 			menu.addItem((item) => item.setTitle("Export finished annotated PDF").setIcon("file-output").onClick(() => void this.exportAnnotatedMixedDocumentPdf()));
 			menu.addItem((item) => item.setTitle("Create blank annotatable PDF...").setIcon("file-plus-2").onClick(() => this.plugin.openBlankAnnotatablePdfModal()));
 		} else {
-			menu.addItem((item) => item.setTitle("Add notebook page before current PDF page...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("before")));
-			menu.addItem((item) => item.setTitle("Add notebook page after current PDF page...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("after")));
+			menu.addItem((item) => item.setTitle("Add template page before current PDF page...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("before")));
+			menu.addItem((item) => item.setTitle("Add template page after current PDF page...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("after")));
 			menu.addItem((item) => item.setTitle("Export finished annotated PDF").setIcon("file-output").onClick(() => void this.exportAnnotatedMixedDocumentPdf()));
 			menu.addItem((item) => item.setTitle("Create blank annotatable PDF...").setIcon("file-plus-2").onClick(() => this.plugin.openBlankAnnotatablePdfModal()));
 		}
@@ -4499,7 +4544,7 @@ class NativePdfAnnotatorSession {
 		input.max = String(totalPages);
 		input.step = "1";
 		input.value = String(clamp(this.currentPage, 1, totalPages));
-		form.createDiv({ cls: "pdf-native-annotator-popover-hint", text: `${totalPages} pages including added notebook pages` });
+		form.createDiv({ cls: "pdf-native-annotator-popover-hint", text: `${totalPages} pages including added template pages` });
 		const actions = form.createDiv({ cls: "pdf-native-annotator-confirm-actions" });
 		const cancelButton = actions.createEl("button", { type: "button", text: "Cancel" });
 		const goButton = actions.createEl("button", { type: "submit", text: "Go", cls: "mod-cta" });
@@ -4680,7 +4725,7 @@ class NativePdfAnnotatorSession {
 					menu.addSeparator();
 					if (entry.pageId) {
 						menu.addItem((item) => item
-							.setTitle("Add notebook page after")
+							.setTitle("Add template page after")
 							.setIcon("plus")
 							.onClick(() => this.openTemplatePageInsertModalAfterPageId(entry.pageId!)));
 						menu.addItem((item) => item
@@ -4724,7 +4769,7 @@ class NativePdfAnnotatorSession {
 							.onClick(() => this.deleteAddedPageById(entry.pageId!)));
 					} else {
 						menu.addItem((item) => item
-							.setTitle("Add notebook page after this PDF page")
+							.setTitle("Add template page after this PDF page")
 							.setIcon("plus")
 							.onClick(() => this.openTemplatePageInsertModalAfterPdfPage(entry.pageNumber)));
 						menu.addItem((item) => item
@@ -5054,8 +5099,8 @@ class NativePdfAnnotatorSession {
 				.setTitle(`${currentSyntheticPage.title} (${getNotebookTemplateLabel(currentSyntheticPage.template)}, ${getNotebookPageSizeLabel(currentSyntheticPage.pageSize)})`)
 				.setDisabled(true));
 			menu.addItem((item) => item.setTitle("Rename added page...").setIcon("pencil").onClick(() => this.openRenameAddedPagePopover(button, currentSyntheticPage.id)));
-			menu.addItem((item) => item.setTitle("Add notebook page before...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("before")));
-			menu.addItem((item) => item.setTitle("Add notebook page after...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("after")));
+			menu.addItem((item) => item.setTitle("Add template page before...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("before")));
+			menu.addItem((item) => item.setTitle("Add template page after...").setIcon("file-plus").onClick(() => this.openTemplatePageInsertModal("after")));
 			menu.addItem((item) => item.setTitle("Duplicate added page").setIcon("copy").onClick(() => this.duplicateCurrentTemplatePage()));
 			menu.addItem((item) => item.setTitle("Duplicate structure only").setIcon("copy").onClick(() => this.duplicateCurrentTemplatePage(false)));
 			menu.addItem((item) => item.setTitle("Clear added page contents").setIcon("eraser").onClick(() => this.clearCurrentTemplatePageContents()));
@@ -5078,11 +5123,11 @@ class NativePdfAnnotatorSession {
 		if (!currentSyntheticPage) {
 			menu.addSeparator();
 			menu.addItem((item) => item
-				.setTitle("Add notebook page before current PDF page...")
+				.setTitle("Add template page before current PDF page...")
 				.setIcon("file-plus")
 				.onClick(() => this.openTemplatePageInsertModal("before")));
 			menu.addItem((item) => item
-				.setTitle("Add notebook page after current PDF page...")
+				.setTitle("Add template page after current PDF page...")
 				.setIcon("file-plus")
 				.onClick(() => this.openTemplatePageInsertModal("after")));
 			menu.addItem((item) => item
@@ -5151,11 +5196,11 @@ class NativePdfAnnotatorSession {
 	private openAddPageMenu(button: HTMLButtonElement): void {
 		const menu = new Menu();
 		menu.addItem((item) => item
-			.setTitle("Add notebook page after current...")
+			.setTitle("Add template page after current...")
 			.setIcon("file-plus")
 			.onClick(() => this.openTemplatePageInsertModal("after")));
 		menu.addItem((item) => item
-			.setTitle("Add notebook page before current...")
+			.setTitle("Add template page before current...")
 			.setIcon("file-plus")
 			.onClick(() => this.openTemplatePageInsertModal("before")));
 		menu.addSeparator();
@@ -5449,7 +5494,7 @@ class NativePdfAnnotatorSession {
 				this.addTemplatePageFromToolbar();
 			});
 			addPageButton.classList.add("pdf-native-annotator-mode-button", "pdf-native-annotator-page-menu-button");
-			addPageButton.title = "Add or insert a notebook page";
+			addPageButton.title = "Add or insert a template page";
 			rightGroup.appendChild(addPageButton);
 			const moreButton = this.createIconButton("more-vertical", "More annotation actions", false, () => {
 				this.openDocumentActionsMenu(moreButton);
@@ -5603,13 +5648,13 @@ class NativePdfAnnotatorSession {
 		if (this.plugin.hasClipboard()) {
 			rightGroup.appendChild(this.createIconButton("clipboard", "Paste copied annotations", false, () => this.pasteClipboard()));
 		}
-		rightGroup.appendChild(this.createIconButton("undo-2", "Undo", false, () => this.undo()));
-		rightGroup.appendChild(this.createIconButton("redo-2", "Redo", false, () => this.redo()));
+		rightGroup.appendChild(this.createHistoryIconButton("undo-2", "Undo", () => this.undoFromToolbar()));
+		rightGroup.appendChild(this.createHistoryIconButton("redo-2", "Redo", () => this.redoFromToolbar()));
 		const addPageButton = this.createButton("+ Page", false, () => {
 			this.addTemplatePageFromToolbar();
 		});
 		addPageButton.classList.add("pdf-native-annotator-mode-button", "pdf-native-annotator-page-menu-button");
-		addPageButton.title = "Add or insert a notebook page";
+		addPageButton.title = "Add or insert a template page";
 		rightGroup.appendChild(addPageButton);
 		const moreButton = this.createIconButton("more-vertical", "More annotation actions", false, () => {
 			this.openDocumentActionsMenu(moreButton);
@@ -5667,6 +5712,43 @@ class NativePdfAnnotatorSession {
 		button.setAttribute("aria-label", label);
 		button.title = label;
 		setIcon(button, icon);
+		return button;
+	}
+
+	private createHistoryIconButton(icon: string, label: string, onActivate: () => void): HTMLButtonElement {
+		const button = createEl("button");
+		button.type = "button";
+		button.className = "pdf-native-annotator-button clickable-icon pdf-native-annotator-icon-button";
+		button.setAttribute("aria-label", label);
+		button.title = label;
+		setIcon(button, icon);
+		let handledPointerDown = false;
+		button.addEventListener("pointerdown", (event) => {
+			event.stopPropagation();
+			if (button.disabled) {
+				return;
+			}
+			if (event.pointerType === "mouse" && event.button !== 0) {
+				return;
+			}
+			handledPointerDown = true;
+			event.preventDefault();
+			onActivate();
+			window.setTimeout(() => {
+				handledPointerDown = false;
+			}, 0);
+		});
+		button.addEventListener("click", (event) => {
+			event.stopPropagation();
+			if (handledPointerDown) {
+				event.preventDefault();
+				return;
+			}
+			event.preventDefault();
+			if (!button.disabled) {
+				onActivate();
+			}
+		});
 		return button;
 	}
 
@@ -6226,6 +6308,10 @@ class NativePdfAnnotatorSession {
 	}
 
 	private refreshToolPreviewFromLastPointer(active = false): void {
+		if (this.currentTool !== "eraser") {
+			this.hideToolPreview();
+			return;
+		}
 		const preview = this.previewState.snapshot;
 		if (preview.clientX === null || preview.clientY === null) {
 			if (!active) {
@@ -6499,6 +6585,24 @@ class NativePdfAnnotatorSession {
 			event.preventDefault();
 			return;
 		}
+		const isModifierShortcut = event.ctrlKey || event.metaKey;
+		if (isModifierShortcut && this.isSessionShortcutActive(event)) {
+			const key = event.key.toLowerCase();
+			if (key === "z") {
+				event.preventDefault();
+				if (event.shiftKey) {
+					this.redo();
+				} else {
+					this.undo();
+				}
+				return;
+			}
+			if (key === "y") {
+				event.preventDefault();
+				this.redo();
+				return;
+			}
+		}
 		if (!this.isSessionKeyboardActive(event)) {
 			return;
 		}
@@ -6521,7 +6625,6 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 
-		const isModifierShortcut = event.ctrlKey || event.metaKey;
 		if (isModifierShortcut && event.key.toLowerCase() === "a") {
 			event.preventDefault();
 			this.selectAllCurrentPageAnnotations();
@@ -6593,6 +6696,13 @@ class NativePdfAnnotatorSession {
 		if (!this.annotationMode || this.currentTool !== "select" || !this.isLeafActive()) {
 			return false;
 		}
+		return this.isSessionShortcutActive(event);
+	}
+
+	private isSessionShortcutActive(event: KeyboardEvent): boolean {
+		if (!this.annotationMode || !this.isLeafActive()) {
+			return false;
+		}
 		if (this.hasOpenTransientPopover()) {
 			return false;
 		}
@@ -6651,11 +6761,9 @@ class NativePdfAnnotatorSession {
 		if (!this.annotationMode) {
 			return;
 		}
-		this.updateToolPreview(
-			event.clientX,
-			event.clientY,
-			this.currentTool === "eraser" && this.erasingSession
-		);
+		if (this.currentTool === "eraser") {
+			this.updateToolPreview(event.clientX, event.clientY, this.erasingSession);
+		}
 	};
 
 	private readonly handleViewPointerLeave = (): void => {
@@ -6844,7 +6952,9 @@ class NativePdfAnnotatorSession {
 			this.finishSessionInlineTextEditor(true);
 		}
 		event.preventDefault();
-		this.updateToolPreview(event.clientX, event.clientY, true);
+		if (this.currentTool === "eraser") {
+			this.updateToolPreview(event.clientX, event.clientY, true);
+		}
 
 		try {
 			canvas.setPointerCapture(event.pointerId);
@@ -7058,7 +7168,6 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 
-		this.pushHistory();
 		const strokeWidth = this.currentTool === "highlighter" ? this.toolState.getWidth("highlighter") : this.toolState.getWidth("pen");
 		const zIndex = this.getNextPageZIndex(pageNumber);
 		this.currentStroke = {
@@ -7074,7 +7183,8 @@ class NativePdfAnnotatorSession {
 		};
 		this.pointerPage = pageNumber;
 		this.drawTransientPageAnnotations(pageNumber);
-		this.refreshStatus(`Stroke started: ${this.currentTool}, page ${pageNumber}, points 1`, 5000);
+		new Notice(`New stroke on page ${pageNumber}`, 900);
+		this.refreshStatus(`Stroke started: ${this.currentTool}, page ${pageNumber}, points 1`, 900);
 	}
 
 	private hasActivePdfPointerInteraction(): boolean {
@@ -7107,7 +7217,10 @@ class NativePdfAnnotatorSession {
 		}
 		const pageNumber = this.pointerPage ?? this.currentStroke?.page ?? this.currentShape?.page ?? this.currentLasso?.page ?? this.currentPage;
 		if (this.currentStroke && this.annotationDocument && this.currentStroke.points.length > 0) {
+			const pointCount = this.currentStroke.points.length;
+			this.pushStrokeAddHistory(this.currentStroke);
 			this.annotationDocument.strokes.push(this.currentStroke);
+			const strokeCount = this.annotationDocument.strokes.length;
 			this.currentStroke = null;
 			this.currentShape = null;
 			this.currentLasso = null;
@@ -7118,7 +7231,8 @@ class NativePdfAnnotatorSession {
 			this.pointerPage = null;
 			this.dragMoved = false;
 			this.unbindPdfPointerDocumentTracking();
-			this.markDirtyAndRedraw(message);
+			new Notice(`Stroke recorded (${pointCount} points, ${strokeCount} total)`, 1400);
+			this.markDirtyAndRedraw(`${message} (${pointCount} points, ${strokeCount} strokes)`);
 			return;
 		}
 		if (this.currentShape && this.annotationDocument) {
@@ -7156,7 +7270,10 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		if (this.currentStroke && this.currentStroke.points.length > 0) {
+			const pointCount = this.currentStroke.points.length;
+			this.pushStrokeAddHistory(this.currentStroke);
 			this.annotationDocument.strokes.push(this.currentStroke);
+			const strokeCount = this.annotationDocument.strokes.length;
 			const pageNumber = this.currentStroke.page;
 			this.currentStroke = null;
 			this.currentShape = null;
@@ -7172,6 +7289,8 @@ class NativePdfAnnotatorSession {
 			this.isDirty = true;
 			this.scheduleSave();
 			this.drawPageAnnotations(pageNumber);
+			new Notice(`Stroke recorded before layout refresh (${pointCount} points, ${strokeCount} total)`, 1600);
+			this.refreshStatus(`Stroke recorded before layout refresh (${pointCount} points, ${strokeCount} strokes)`, 1200);
 			return;
 		}
 		if (this.currentShape) {
@@ -7256,11 +7375,9 @@ class NativePdfAnnotatorSession {
 	};
 
 	private handlePointerMoveForCanvas(event: PointerEvent, canvas: HTMLCanvasElement): void {
-		this.updateToolPreview(
-			event.clientX,
-			event.clientY,
-			this.currentTool === "eraser" && this.erasingSession
-		);
+		if (this.currentTool === "eraser") {
+			this.updateToolPreview(event.clientX, event.clientY, this.erasingSession);
+		}
 		const pageNumber = Number(canvas.dataset.pageNumber);
 		if (this.pointerPage === null) {
 			return;
@@ -7539,8 +7656,12 @@ class NativePdfAnnotatorSession {
 		if (this.currentShape) {
 			this.annotationDocument.shapes.push(this.currentShape);
 		} else if (this.currentStroke && this.currentStroke.points.length > 0) {
-			this.refreshStatus(`Saving stroke: ${this.currentStroke.points.length} points`, 3000);
+			const pointCount = this.currentStroke.points.length;
+			this.refreshStatus(`Saving stroke: ${pointCount} points`, 3000);
+			this.pushStrokeAddHistory(this.currentStroke);
 			this.annotationDocument.strokes.push(this.currentStroke);
+			new Notice(`Stroke recorded (${pointCount} points, ${this.annotationDocument.strokes.length} total)`, 1400);
+			this.refreshStatus(`Stroke recorded (${pointCount} points, ${this.annotationDocument.strokes.length} strokes)`, 900);
 		}
 		this.invalidateAnnotationPageCache();
 		this.isDirty = true;
@@ -7582,6 +7703,10 @@ class NativePdfAnnotatorSession {
 
 	private getNormalizedPoint(surface: PageSurface, event: PointerEvent): AnnotationPoint {
 		const rect = surface.overlayEl.getBoundingClientRect();
+		return this.getNormalizedPointFromRect(rect, event);
+	}
+
+	private getNormalizedPointFromRect(rect: DOMRect, event: PointerEvent): AnnotationPoint {
 		const width = rect.width || 1;
 		const height = rect.height || 1;
 		const pressure = resolvePointerPressure(event, this.lastPdfPoint, this.lastPdfPointTime);
@@ -7597,8 +7722,9 @@ class NativePdfAnnotatorSession {
 	}
 
 	private getNormalizedPoints(surface: PageSurface, event: PointerEvent): AnnotationPoint[] {
+		const rect = surface.overlayEl.getBoundingClientRect();
 		return getCoalescedPointerEvents(event)
-			.map((sample) => this.getNormalizedPoint(surface, sample));
+			.map((sample) => this.getNormalizedPointFromRect(rect, sample));
 	}
 
 	private getStrokeMergeThreshold(surface: PageSurface): number {
@@ -7930,6 +8056,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private drawPageAnnotations(pageNumber: number): void {
+		const start = performance.now();
 		if (!this.annotationDocument) {
 			return;
 		}
@@ -7990,6 +8117,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.clearTransientLayer(surface);
 		this.drawTransientPageAnnotations(pageNumber);
+		this.notePerf("draw page", performance.now() - start);
 	}
 
 	private drawImageAnnotation(context: CanvasRenderingContext2D, surface: PageSurface, imageItem: ImageAnnotation): void {
@@ -8029,11 +8157,11 @@ class NativePdfAnnotatorSession {
 	}
 
 	private drawTransientPageAnnotations(pageNumber: number): void {
+		const start = performance.now();
 		const surface = this.pageSurfaces.get(pageNumber);
 		if (!surface) {
 			return;
 		}
-		this.ensureOverlayLayerOrder(surface);
 		const context = surface.transientEl.getContext("2d");
 		if (!context) {
 			return;
@@ -8050,6 +8178,7 @@ class NativePdfAnnotatorSession {
 		if (this.currentLasso?.page === pageNumber) {
 			this.drawLasso(context, surface, this.currentLasso);
 		}
+		this.notePerf("draw transient", performance.now() - start);
 	}
 
 	private drawStroke(
@@ -9044,15 +9173,63 @@ class NativePdfAnnotatorSession {
 		}
 	}
 
+	private notePerf(label: string, elapsedMs = 0): void {
+		const now = performance.now();
+		if (this.perfWindowStartedAt === 0) {
+			this.perfWindowStartedAt = now;
+		}
+		const stat = this.perfStats.get(label) ?? { count: 0, total: 0, max: 0 };
+		stat.count += 1;
+		stat.total += elapsedMs;
+		stat.max = Math.max(stat.max, elapsedMs);
+		this.perfStats.set(label, stat);
+		if (now - this.perfWindowStartedAt < 3000) {
+			return;
+		}
+		this.reportPerfStats(now);
+	}
+
+	private reportPerfStats(now = performance.now()): void {
+		if (this.perfStats.size === 0) {
+			this.perfWindowStartedAt = now;
+			return;
+		}
+		const entries = Array.from(this.perfStats.entries())
+			.sort((left, right) => right[1].total - left[1].total)
+			.slice(0, 5);
+		const summary = entries
+			.map(([label, stat]) => `${label} ${stat.total.toFixed(0)}ms/${stat.count} max${stat.max.toFixed(0)}`)
+			.join("; ");
+		console.log(`freedraw-pdf perf: ${summary}`, Object.fromEntries(this.perfStats.entries()));
+		this.perfStats.clear();
+		this.perfWindowStartedAt = now;
+	}
+
 	private pushHistory(): void {
 		if (!this.annotationDocument) {
 			return;
 		}
-		this.undoStack.push(cloneDocument(this.annotationDocument));
+		const start = performance.now();
+		this.pushHistoryEntry({ kind: "document", document: cloneDocument(this.annotationDocument) });
+		this.notePerf("history clone", performance.now() - start);
+	}
+
+	private pushStrokeAddHistory(stroke: StrokeAnnotation): void {
+		const start = performance.now();
+		this.pushHistoryEntry({ kind: "stroke-add", stroke: this.cloneStroke(stroke) });
+		this.notePerf("history stroke", performance.now() - start);
+	}
+
+	private pushHistoryEntry(entry: HistoryEntry): void {
+		this.undoStack.push(entry);
 		if (this.undoStack.length > MAX_HISTORY) {
 			this.undoStack.shift();
 		}
 		this.redoStack = [];
+	}
+
+	private cloneStroke(stroke: StrokeAnnotation): StrokeAnnotation {
+		return JSON.parse(JSON.stringify(stroke)) as StrokeAnnotation;
 	}
 
 	private markDirtyAndRedraw(message: string): void {
@@ -9216,7 +9393,6 @@ class NativePdfAnnotatorSession {
 
 export default class PDFAnnotatorPlugin extends Plugin {
 	private store!: AnnotationStore;
-	private notebookStore!: NotebookStore;
 	private annotatedEmbeds!: AnnotatedEmbedController;
 	private settingsController!: PDFAnnotatorSettingsController;
 	private sessions = new Map<WorkspaceLeaf, NativePdfAnnotatorSession>();
@@ -9236,15 +9412,12 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		await this.settingsController.load();
 		setInkRenderSettings(this.settingsController.getInkRenderSettings());
 		this.store = new AnnotationStore(this.app);
-		this.notebookStore = new NotebookStore(this.app);
 		this.annotatedEmbeds = new AnnotatedEmbedController(this.app, this.store, {
 			shouldShowAnnotatedEmbedHeader: () => this.shouldShowAnnotatedEmbedHeader(),
 			openPdfPage: (file, pageNumber, rect) => this.openPdfPage(file, pageNumber, rect),
 			writeClipboardText: (text) => this.writeClipboardText(text)
 		});
 		this.addSettingTab(new PDFAnnotatorSettingTab(this.app, this));
-		this.registerView(NOTEBOOK_VIEW_TYPE, (leaf) => new AnnotatorNotebookView(leaf, this.notebookStore, this));
-		this.registerExtensions([NOTEBOOK_EXTENSION], NOTEBOOK_VIEW_TYPE);
 		this.registerMarkdownCodeBlockProcessor("freedraw-pdf", (source, el, context) => {
 			void this.annotatedEmbeds.renderMarkdownBlock(source, el, context.sourcePath);
 		});
@@ -9346,7 +9519,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 		this.addCommand({
 			id: "insert-native-notebook-page-after-current",
-			name: "Add temporary notebook page after current PDF page",
+			name: "Add temporary template page after current PDF page",
 			checkCallback: (checking: boolean) => {
 				const session = this.getSessionForLeaf(this.getActivePdfLeaf());
 				const canRun = !!session;
@@ -9359,7 +9532,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 		this.addCommand({
 			id: "insert-native-notebook-page-before-current",
-			name: "Add temporary notebook page before current PDF page",
+			name: "Add temporary template page before current PDF page",
 			checkCallback: (checking: boolean) => {
 				const session = this.getSessionForLeaf(this.getActivePdfLeaf());
 				const canRun = !!session;
@@ -9438,6 +9611,32 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "pdf-undo-annotation-change",
+			name: "PDF: Undo annotation change",
+			checkCallback: (checking: boolean) => {
+				const session = this.getSessionForLeaf(this.getActivePdfLeaf());
+				const canRun = !!session;
+				if (canRun && !checking) {
+					session.undo();
+				}
+				return canRun;
+			}
+		});
+
+		this.addCommand({
+			id: "pdf-redo-annotation-change",
+			name: "PDF: Redo annotation change",
+			checkCallback: (checking: boolean) => {
+				const session = this.getSessionForLeaf(this.getActivePdfLeaf());
+				const canRun = !!session;
+				if (canRun && !checking) {
+					session.redo();
+				}
+				return canRun;
+			}
+		});
+
+		this.addCommand({
 			id: "pdf-open-mixed-page-list",
 			name: "PDF: Open mixed page list",
 			checkCallback: (checking: boolean) => {
@@ -9465,7 +9664,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 		this.addCommand({
 			id: "pdf-add-template-page-end",
-			name: "PDF: Quick add notebook page to end",
+			name: "PDF: Quick add template page to end",
 			checkCallback: (checking: boolean) => {
 				const session = this.getSessionForLeaf(this.getActivePdfLeaf());
 				const canRun = !!session;
@@ -9478,7 +9677,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 		this.addCommand({
 			id: "pdf-add-template-page-before",
-			name: "PDF: Quick add notebook page before current page",
+			name: "PDF: Quick add template page before current page",
 			checkCallback: (checking: boolean) => {
 				const session = this.getSessionForLeaf(this.getActivePdfLeaf());
 				const canRun = !!session;
@@ -9491,7 +9690,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 		this.addCommand({
 			id: "pdf-add-template-page-after",
-			name: "PDF: Quick add notebook page after current page",
+			name: "PDF: Quick add template page after current page",
 			checkCallback: (checking: boolean) => {
 				const session = this.getSessionForLeaf(this.getActivePdfLeaf());
 				const canRun = !!session;
@@ -9553,8 +9752,6 @@ export default class PDFAnnotatorPlugin extends Plugin {
 				return canRun;
 			}
 		});
-
-		registerNotebookCommands(this, this);
 
 		this.addCommand({
 			id: "select-all-page-annotations",
@@ -9784,21 +9981,6 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		}
 	}
 
-	async createNotebook(): Promise<void> {
-		const activeFile = this.app.workspace.getActiveFile();
-		const folderPrefix = activeFile?.parent?.path ? `${activeFile.parent.path}/` : "";
-		let baseName = "New notebook";
-		let path = `${folderPrefix}${baseName}.${NOTEBOOK_EXTENSION}`;
-		let counter = 2;
-		while (this.app.vault.getAbstractFileByPath(path)) {
-			path = `${folderPrefix}${baseName} ${counter}.${NOTEBOOK_EXTENSION}`;
-			counter += 1;
-		}
-		const title = path.split("/").pop()?.replace(`.${NOTEBOOK_EXTENSION}`, "") ?? baseName;
-		const notebookFile = await this.app.vault.create(path, JSON.stringify(createEmptyNotebookDocument(title), null, 2));
-		await this.openNotebookFile(notebookFile);
-	}
-
 	openBlankAnnotatablePdfModal(): void {
 		new BlankAnnotatablePdfModal(this.app, (options) => {
 			void this.createBlankAnnotatablePdf(options);
@@ -9856,17 +10038,6 @@ export default class PDFAnnotatorPlugin extends Plugin {
 			console.error("freedraw-pdf: failed to create blank annotatable PDF", error);
 			new Notice("Could not create blank annotatable PDF. Check the developer console for details.");
 		}
-	}
-
-	async openNotebookFile(file: TFile): Promise<void> {
-		const leaf = this.app.workspace.getLeaf(true);
-		await leaf.setViewState({
-			type: NOTEBOOK_VIEW_TYPE,
-			state: {
-				file: file.path
-			},
-			active: true
-		});
 	}
 
 	getToolDefaults(): ToolStateSnapshot {
@@ -9994,14 +10165,6 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		return true;
 	}
 
-	async syncSessionsForNotebook(): Promise<void> {
-		await this.syncSessions();
-	}
-
-	getSessionForLeafForNotebook(leaf: WorkspaceLeaf | null): NativePdfAnnotatorSession | null {
-		return this.getSessionForLeaf(leaf);
-	}
-
 	async openRegionReferenceFromClipboard(): Promise<void> {
 		try {
 			const raw = await readClipboardText();
@@ -10102,10 +10265,6 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 	private getSessionForLeaf(leaf: WorkspaceLeaf | null): NativePdfAnnotatorSession | null {
 		return leaf ? this.sessions.get(leaf) ?? null : null;
-	}
-
-	getActiveNotebookView(): AnnotatorNotebookView | null {
-		return this.app.workspace.getActiveViewOfType(AnnotatorNotebookView);
 	}
 
 	private createSession(leaf: WorkspaceLeaf): NativePdfAnnotatorSession {

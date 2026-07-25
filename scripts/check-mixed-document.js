@@ -21,7 +21,6 @@ function assertNotContains(fileName, content, needle, message) {
 
 const mainTs = read("main.ts");
 const mixedExportTs = read("src/export/mixedDocumentExport.ts");
-const notebookCommandsTs = read("src/commands/notebookCommands.ts");
 const packageJson = JSON.parse(read("package.json"));
 const builtMainPath = path.join(projectRoot, "main.js");
 const builtMain = fs.existsSync(builtMainPath) ? fs.readFileSync(builtMainPath, "utf8") : "";
@@ -44,7 +43,7 @@ assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "\"annotated 
 assertContains("main.ts", mainTs, "id: \"insert-native-notebook-page-after-current\"", "temporary insertion-after command must remain registered");
 assertContains("main.ts", mainTs, "id: \"insert-native-notebook-page-before-current\"", "temporary insertion-before command must remain registered");
 assertContains("main.ts", mainTs, "openTemplatePageInsertModal", "default insertion must use the configurable temporary-page modal path");
-assertContains("main.ts", mainTs, "Add notebook page after current", "temporary insertion must be visible in menus");
+assertContains("main.ts", mainTs, "Add template page after current", "temporary insertion must be visible in menus");
 assertContains("main.ts", mainTs, "Export finished annotated PDF", "finished-PDF export must be visible in the page workflow");
 assertContains("main.ts", mainTs, "deleteCurrentPdfPageFromSession", "current original PDF pages must be deletable non-destructively from the session");
 assertContains("main.ts", mainTs, "deletedPdfPages", "deleted original PDF pages must be tracked in the sidecar");
@@ -54,17 +53,18 @@ assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "export async
 assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "renderMixedPagesToPdfBytes(app, host, sourceFile, annotationDocument, mixedEntries, realPdfPageCount, false)", "native working PDF should keep annotations editable in sidecar");
 assertContains("main.ts", mainTs, "nextDocument.appendedPages = []", "native working PDF sidecar must clear converted synthetic pages");
 
-assertContains("src/commands/notebookCommands.ts", notebookCommandsTs, "Legacy: Create .annotbook notebook", "legacy annotbook creation must be demoted");
-assertNotContains("src/commands/notebookCommands.ts", notebookCommandsTs, "name: \"Create annotator notebook\"", "legacy annotbook command must not look like the primary scratch workflow");
+assertNotContains("main.ts", mainTs, "registerNotebookCommands", "standalone notebook commands must not be registered");
+assertNotContains("main.ts", mainTs, "AnnotatorNotebookView", "standalone notebook view must not be registered");
+assertNotContains("main.ts", mainTs, "NOTEBOOK_VIEW_TYPE", "standalone notebook view type must not be registered");
 
 assertContains("package.json", JSON.stringify(packageJson.scripts), "check:mixed", "package scripts must expose this verifier");
 
 if (builtMain) {
 	assertContains("main.js", builtMain, "Create blank annotatable PDF", "built bundle must include scratch native PDF workflow");
 	assertContains("main.js", builtMain, "Export annotated mixed PDF", "built bundle must include mixed annotated PDF export");
-	assertContains("main.js", builtMain, "Add notebook page after current", "built bundle must include temporary notebook page insertion");
+	assertContains("main.js", builtMain, "Add template page after current", "built bundle must include temporary page insertion");
 	assertContains("main.js", builtMain, "Delete current PDF page from session", "built bundle must include session-level PDF page deletion");
-	assertContains("main.js", builtMain, "Legacy: Create .annotbook notebook", "built bundle must include demoted legacy annotbook command");
+	assertNotContains("main.js", builtMain, "Legacy: Create .annotbook notebook", "built bundle must not include standalone notebook commands");
 	assertNotContains("main.js", builtMain, "Create annotator notebook", "built bundle must not expose the old primary annotbook command label");
 }
 

@@ -1,8 +1,6 @@
 import type { PDFAnnotatorSettings, ToolPreset, ToolPresetKind, ToolStateSnapshot } from "./types";
 
 export const ANNOTATION_FILE_SUFFIX = ".annot.json";
-export const NOTEBOOK_EXTENSION = "annotbook";
-export const NOTEBOOK_VIEW_TYPE = "freedraw-pdf-notebook";
 export const MAX_HISTORY = 100;
 export const PAGE_VIRTUALIZATION_MARGIN = 0;
 export const ZOOM_SETTLE_DELAY_MS = 120;
