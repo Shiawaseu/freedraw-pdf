@@ -76,10 +76,9 @@ assertNotContains("main.ts", mainTs, "this.notePerf(\"layout full\"", "layout re
 assertContains("main.ts", mainTs, "this.clearLayoutRefreshHandles();", "layout refresh scheduling must debounce duplicate resize/mutation events");
 assertContains("main.ts", mainTs, "childList: true,\n\t\t\tsubtree: true\n\t\t});", "PDF DOM observer must not watch style/class attribute churn");
 assertNotContains("main.ts", mainTs, "private markPageZooming(pageNumber: number): void {\n\t\tthis.zoomingPages.add(pageNumber);\n\t\tthis.scheduleLayoutRefresh();", "per-page resize observer must not start full layout refresh cascades");
-assertContains("main.ts", mainTs, "private notePerf(label: string, elapsedMs = 0): void", "temporary efficiency build must include perf instrumentation");
-assertContains("main.ts", mainTs, "freedraw-pdf perf:", "temporary efficiency build must log perf summaries");
-assertContains("main.ts", mainTs, "this.notePerf(\"draw transient\"", "temporary efficiency build must time live drawing redraws");
-assertContains("main.ts", mainTs, "this.notePerf(\"history clone\"", "temporary efficiency build must time full-document history clones");
+assertNotContains("main.ts", mainTs, "freedraw-pdf perf:", "production build must not include temporary performance console logging");
+assertNotContains("main.ts", mainTs, "private notePerf(", "production build must not include temporary performance instrumentation");
+assertNotContains("main.ts", mainTs, "this.notePerf(", "production build must not call temporary performance instrumentation");
 assertContains("main.ts", mainTs, "button.type = \"button\";", "toolbar controls must be real buttons");
 assertContains("main.ts", mainTs, "button.className = \"pdf-native-annotator-button\";", "text toolbar buttons must keep the stable working button class");
 assertContains("main.ts", mainTs, "button.addEventListener(\"pointerdown\", (event) => event.stopPropagation());", "toolbar buttons must stop toolbar drag on pointer down");

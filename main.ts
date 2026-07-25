@@ -444,8 +444,6 @@ class NativePdfAnnotatorSession {
 	private imageElementCache = new Map<string, HTMLImageElement>();
 	private zoomingPages = new Set<number>();
 	private annotationPageCache: Map<number, PageAnnotationBucket> | null = null;
-	private perfWindowStartedAt = 0;
-	private perfStats = new Map<string, { count: number; total: number; max: number }>();
 	private realPdfPageCount = 0;
 	private syntheticPageContainer: HTMLElement | null = null;
 	private isSyncingSyntheticPages = false;
@@ -597,9 +595,7 @@ class NativePdfAnnotatorSession {
 		}
 
 		try {
-			const start = performance.now();
 			await this.store.save(this.file, this.annotationDocument);
-			this.notePerf("save", performance.now() - start);
 			this.isDirty = false;
 			this.refreshStatus(`Saved ${this.store.getSidecarPath(this.file)}`);
 		} catch (error) {
@@ -2080,7 +2076,6 @@ class NativePdfAnnotatorSession {
 			if (!externalChange) {
 				return;
 			}
-			this.notePerf("mutation");
 			this.mountUi();
 			this.scheduleLayoutRefresh();
 		});
@@ -2091,7 +2086,6 @@ class NativePdfAnnotatorSession {
 
 		if (typeof ResizeObserver !== "undefined") {
 			this.viewResizeObserver = new ResizeObserver(() => {
-				this.notePerf("view resize");
 				this.scheduleRepositionOpenPopovers();
 				this.scheduleLayoutRefresh();
 			});
@@ -2608,7 +2602,6 @@ class NativePdfAnnotatorSession {
 		}
 		this.pageResizeObservers.get(surface.pageNumber)?.disconnect();
 		const observer = new ResizeObserver(() => {
-			this.notePerf("page resize");
 			this.previewResizeOverlay(surface);
 			this.markPageZooming(surface.pageNumber);
 		});
@@ -2617,7 +2610,6 @@ class NativePdfAnnotatorSession {
 	}
 
 	private markPageZooming(pageNumber: number): void {
-		this.notePerf("page zoom");
 		this.zoomingPages.add(pageNumber);
 		const surface = this.pageSurfaces.get(pageNumber);
 		if (surface) {
@@ -2815,14 +2807,11 @@ class NativePdfAnnotatorSession {
 		if (!this.file || !this.annotationDocument) {
 			return;
 		}
-		this.notePerf("layout request");
 		this.clearLayoutRefreshHandles();
 		const handle = window.setTimeout(() => {
-			const start = performance.now();
 			this.layoutRefreshHandles = this.layoutRefreshHandles.filter((pendingHandle) => pendingHandle !== handle);
 			this.syncPages(false);
 			this.forceRedrawVisibleAnnotations();
-			this.notePerf("layout visible", performance.now() - start);
 		}, 220);
 		this.layoutRefreshHandles.push(handle);
 	}
@@ -8056,7 +8045,6 @@ class NativePdfAnnotatorSession {
 	}
 
 	private drawPageAnnotations(pageNumber: number): void {
-		const start = performance.now();
 		if (!this.annotationDocument) {
 			return;
 		}
@@ -8117,7 +8105,6 @@ class NativePdfAnnotatorSession {
 		}
 		this.clearTransientLayer(surface);
 		this.drawTransientPageAnnotations(pageNumber);
-		this.notePerf("draw page", performance.now() - start);
 	}
 
 	private drawImageAnnotation(context: CanvasRenderingContext2D, surface: PageSurface, imageItem: ImageAnnotation): void {
@@ -8157,7 +8144,6 @@ class NativePdfAnnotatorSession {
 	}
 
 	private drawTransientPageAnnotations(pageNumber: number): void {
-		const start = performance.now();
 		const surface = this.pageSurfaces.get(pageNumber);
 		if (!surface) {
 			return;
@@ -8178,7 +8164,6 @@ class NativePdfAnnotatorSession {
 		if (this.currentLasso?.page === pageNumber) {
 			this.drawLasso(context, surface, this.currentLasso);
 		}
-		this.notePerf("draw transient", performance.now() - start);
 	}
 
 	private drawStroke(
@@ -9173,51 +9158,15 @@ class NativePdfAnnotatorSession {
 		}
 	}
 
-	private notePerf(label: string, elapsedMs = 0): void {
-		const now = performance.now();
-		if (this.perfWindowStartedAt === 0) {
-			this.perfWindowStartedAt = now;
-		}
-		const stat = this.perfStats.get(label) ?? { count: 0, total: 0, max: 0 };
-		stat.count += 1;
-		stat.total += elapsedMs;
-		stat.max = Math.max(stat.max, elapsedMs);
-		this.perfStats.set(label, stat);
-		if (now - this.perfWindowStartedAt < 3000) {
-			return;
-		}
-		this.reportPerfStats(now);
-	}
-
-	private reportPerfStats(now = performance.now()): void {
-		if (this.perfStats.size === 0) {
-			this.perfWindowStartedAt = now;
-			return;
-		}
-		const entries = Array.from(this.perfStats.entries())
-			.sort((left, right) => right[1].total - left[1].total)
-			.slice(0, 5);
-		const summary = entries
-			.map(([label, stat]) => `${label} ${stat.total.toFixed(0)}ms/${stat.count} max${stat.max.toFixed(0)}`)
-			.join("; ");
-		console.log(`freedraw-pdf perf: ${summary}`, Object.fromEntries(this.perfStats.entries()));
-		this.perfStats.clear();
-		this.perfWindowStartedAt = now;
-	}
-
 	private pushHistory(): void {
 		if (!this.annotationDocument) {
 			return;
 		}
-		const start = performance.now();
 		this.pushHistoryEntry({ kind: "document", document: cloneDocument(this.annotationDocument) });
-		this.notePerf("history clone", performance.now() - start);
 	}
 
 	private pushStrokeAddHistory(stroke: StrokeAnnotation): void {
-		const start = performance.now();
 		this.pushHistoryEntry({ kind: "stroke-add", stroke: this.cloneStroke(stroke) });
-		this.notePerf("history stroke", performance.now() - start);
 	}
 
 	private pushHistoryEntry(entry: HistoryEntry): void {
