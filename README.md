@@ -38,7 +38,7 @@ Freedraw PDF uses Obsidian's native PDF toolbar when available and falls back to
 | Pen | Pressure-aware handwriting and freehand drawing with independent color and width presets. |
 | Highlighter | Translucent emphasis with settings separate from the pen. |
 | Eraser | Remove complete contacted objects or erase along a path. |
-| Text | Add movable, resizable text boxes with independent font and color settings. |
+| Text | Add movable, resizable text boxes with independent color, font, size, bold, italic, and alignment controls. |
 | Shapes | Add rectangles, ellipses, and straight lines. |
 | Image | Place a vault-backed image on the current page. |
 | Select | Move, resize, reorder, duplicate, copy, cut, paste, or delete annotations. |
@@ -86,8 +86,6 @@ Template pages remain editable during annotation and become regular flattened pa
 
 ### Community Plugins
 
-After Freedraw PDF is listed in Obsidian's community plugin directory:
-
 1. Open **Settings → Community plugins → Browse**.
 2. Search for **Freedraw PDF**.
 3. Select **Install**, then **Enable**.
@@ -104,6 +102,8 @@ The settings tab provides controls for:
 - Fast or high-quality live stroke previews.
 - Autosave timing.
 - Optional region, embed, notice, and rendering diagnostic controls.
+
+Text formatting is preserved in live Markdown embeds, page snapshots, and exported PDFs. While editing text, use `Ctrl/Cmd+B` for bold and `Ctrl/Cmd+I` for italic.
 
 ## Storage and Export
 
@@ -167,6 +167,7 @@ Useful commands:
 ## Support and Security
 
 - Use [GitHub Issues](https://github.com/vividasasana/freedraw-pdf/issues) for bug reports and feature requests.
+- See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a code change.
 - Follow [SECURITY.md](SECURITY.md) for security-sensitive reports.
 
 ## License

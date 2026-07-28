@@ -22,6 +22,8 @@ export interface BoundedText {
 	fontScale?: number;
 	boxWidthScale?: number;
 	boxHeightScale?: number;
+	lineSpacing?: number;
+	wordWrap?: boolean;
 }
 
 export function getTextLines(text: string): string[] {
@@ -69,13 +71,17 @@ export function getTextBounds(textItem: BoundedText): GeometryBounds {
 	const estimatedWidth = textItem.boxWidthScale && textItem.boxWidthScale > 0
 		? Math.max(0.032, textItem.boxWidthScale)
 		: rawEstimatedWidth;
-	const estimatedWrappedLineCount = textItem.boxWidthScale && textItem.boxWidthScale > 0
+	const estimatedWrappedLineCount = textItem.wordWrap !== false && textItem.boxWidthScale && textItem.boxWidthScale > 0
 		? lines.reduce((sum, line) => {
 			const lineWidth = Math.max(0.032, line.length * normalizedFontSize * 0.58);
 			return sum + Math.max(1, Math.ceil(lineWidth / estimatedWidth));
 		}, 0)
 		: lines.length;
-	const estimatedHeight = Math.max(0.026, estimatedWrappedLineCount * normalizedFontSize * 1.35);
+	const lineSpacing = clamp(textItem.lineSpacing ?? 1.35, 0.8, 3);
+	const estimatedHeight = Math.max(
+		0.026,
+		normalizedFontSize + ((Math.max(1, estimatedWrappedLineCount) - 1) * normalizedFontSize * lineSpacing)
+	);
 	const finalHeight = textItem.boxHeightScale && textItem.boxHeightScale > 0
 		? Math.max(estimatedHeight, textItem.boxHeightScale)
 		: estimatedHeight;

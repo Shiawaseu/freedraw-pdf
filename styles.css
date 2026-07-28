@@ -336,7 +336,7 @@
 	position: fixed;
 	width: min(420px, calc(100vw - 24px));
 	max-height: var(--modal-height);
-	padding: var(--size-4-4) 0 0 0;
+	padding: var(--size-4-4) 0 var(--size-4-2);
 	box-sizing: border-box;
 	overflow: hidden;
 }
@@ -543,6 +543,10 @@
 	overflow: hidden;
 	pointer-events: auto;
 	touch-action: none;
+}
+
+.pdf-native-annotator-page-list-open .menu {
+	z-index: calc(var(--pdf-native-annotator-popover-z, 100000) + 10);
 }
 
 .pdf-native-annotator-page-list {
@@ -1020,6 +1024,11 @@
 	font: var(--font-ui-small);
 }
 
+.pdf-native-annotator-case-select {
+	width: 156px;
+	font: var(--font-ui-small);
+}
+
 .pdf-native-annotator-font-option {
 	border: 1px solid transparent;
 	border-radius: var(--radius-s);
@@ -1067,6 +1076,60 @@
 	background: var(--background-modifier-form-field);
 	color: var(--text-normal);
 	font: var(--font-ui-small);
+}
+
+.pdf-native-annotator-text-style-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--size-4-3);
+	margin: var(--size-4-3) 0;
+}
+
+.pdf-native-annotator-text-style-label {
+	color: var(--text-muted);
+	font: var(--font-ui-small);
+}
+
+.pdf-native-annotator-text-style-group {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	padding: 2px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: var(--background-modifier-form-field);
+}
+
+.pdf-native-annotator-text-style-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 44px;
+	height: 44px;
+	padding: 0;
+	border: 0;
+	border-radius: var(--clickable-icon-radius);
+	background: transparent;
+	color: var(--text-muted);
+	box-shadow: none;
+	cursor: pointer;
+}
+
+.modal.pdf-native-annotator-font-popover .pdf-native-annotator-text-style-group button.pdf-native-annotator-text-style-button.pdf-native-annotator-text-style-button:hover,
+.modal.pdf-native-annotator-font-popover .pdf-native-annotator-text-style-group button.pdf-native-annotator-text-style-button.pdf-native-annotator-text-style-button:focus-visible {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.modal.pdf-native-annotator-font-popover .pdf-native-annotator-text-style-group button.pdf-native-annotator-text-style-button.pdf-native-annotator-text-style-button.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.pdf-native-annotator-text-style-button svg {
+	width: 16px;
+	height: 16px;
 }
 
 .pdf-native-annotator-font-value {
@@ -1308,9 +1371,9 @@
 .pdf-native-annotator-host .pdf-native-annotator-inline-text-frame {
 	position: absolute;
 	z-index: 9992;
-	min-width: 180px;
+	min-width: 44px;
 	min-height: 36px;
-	border: 1.5px dashed #4da3ff;
+	border: 1px dotted #6b6b6b;
 	border-radius: 0;
 	background: transparent;
 	box-shadow: none;
@@ -1341,8 +1404,49 @@
 	white-space: pre-wrap;
 	overflow-wrap: break-word;
 	-webkit-text-fill-color: transparent;
-	caret-color: var(--interactive-accent);
+	caret-color: transparent;
 	cursor: text;
+}
+
+.pdf-native-annotator-host .pdf-native-annotator-inline-text-caret-mirror {
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+	box-sizing: border-box;
+	padding: 6px 10px;
+	overflow: hidden;
+	color: transparent;
+	line-height: 1.35;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+	pointer-events: none;
+}
+
+.pdf-native-annotator-host .pdf-native-annotator-inline-text-caret {
+	display: inline-block;
+	width: 1.5px;
+	height: 1em;
+	margin-right: -1.5px;
+	background: var(--interactive-accent);
+	vertical-align: text-top;
+	transform: translateY(-0.16em);
+	animation: pdf-native-annotator-caret-blink 1s steps(1, end) infinite;
+}
+
+.pdf-native-annotator-host .pdf-native-annotator-inline-text-caret.is-hidden {
+	visibility: hidden;
+}
+
+@keyframes pdf-native-annotator-caret-blink {
+	0%,
+	48% {
+		opacity: 1;
+	}
+
+	49%,
+	100% {
+		opacity: 0;
+	}
 }
 
 .pdf-native-annotator-inline-text-handle {
@@ -1362,9 +1466,9 @@
 	position: absolute;
 	left: 50%;
 	top: 50%;
-	width: 6px;
-	height: 6px;
-	border: 1.5px solid #4da3ff;
+	width: 8px;
+	height: 8px;
+	border: 1.25px solid #6b6b6b;
 	border-radius: 999px;
 	background: #ffffff;
 	transform: translate(-50%, -50%);

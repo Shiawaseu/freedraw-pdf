@@ -69,6 +69,7 @@ assertContains("styles.css", stylesCss, ".pdf-native-annotator-preset:active,\n.
 assertContains("styles.css", stylesCss, ".pdf-native-annotator-tool-color-popover .pdf-native-annotator-color-popover-swatches {", "pen and text palettes must share a dedicated grid");
 assertContains("styles.css", stylesCss, "width: min(240px, calc(100vw - 24px));", "pen and text color popups must retain the previous rectangular width");
 assertContains("styles.css", stylesCss, "grid-template-columns: repeat(6, 28px);", "tool color popup swatches must align in one rectangular row");
+assertContains("styles.css", stylesCss, "padding: var(--size-4-4) 0 var(--size-4-2);", "custom popups must retain a consistent bottom inset");
 assertOccurrenceAtLeast("main.ts", mainTs, "this.addTemplatePageFromToolbar();", 2, "+ Page must be direct in both read and annotation modes");
 assertNotContains("main.ts", mainTs, "this.openAddPageMenu(addPageButton)", "+ Page must not open a hidden menu");
 assertContains("main.ts", mainTs, "Add template page before current PDF page...", "overflow menu must expose PDF-page before insertion");

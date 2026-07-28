@@ -59,6 +59,9 @@ jobs:
             - Built from the tagged source by GitHub Actions.
             - Includes manifest.json, main.js, and styles.css for Obsidian manual installation.
             - Release artifacts are covered by GitHub artifact attestations.
+            - Expands text formatting and editing behavior, including keyboard navigation and export/embed fidelity.
+            - Aligns text, pen, and highlighter color controls and popup spacing.
+            - Keeps page action menus above the Pages dialog.
             - Improves retained-stroke rendering, atomic erasing, touch admission, and render/input scheduling.
 
             Known limitation: rapid consecutive drawing with primary touch in Obsidian on iPad can still miss input while a previous page rebuild is active. This remains under investigation.

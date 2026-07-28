@@ -3,7 +3,7 @@ import { appendStrokePoints, drawSmoothInkStroke, fillInkStrokeOutline, getSmoot
 import { boundsOverlap, distanceBetween, distanceToSegment, getPolygonBounds, segmentsIntersect } from "./src/annotation/geometry";
 import { getAnnotationRenderables, getRenderableOrder, reorderRenderables } from "./src/annotation/renderOrder";
 import type { AnnotationReorderDirection } from "./src/annotation/renderOrder";
-import { getShapeBounds, getStrokeBounds, getTextBounds } from "./src/annotation/bounds";
+import { getNormalizedStrokePadding, getShapeBounds, getStrokeBounds, getTextBounds } from "./src/annotation/bounds";
 import { migrateLegacyEraserPaths } from "./src/annotation/eraser";
 import { cloneAnnotationsForPage, distanceBetweenSegments, distanceToBounds, distanceToRectEdge, distanceToShape, distanceToStroke, getClipboardPasteOffset, getSelectionBoxPoints, normalizeRect, parseRegionReference, pointInBounds, segmentIntersectsExpandedBounds } from "./src/annotation/interaction";
 import { PAPER_TEMPLATE_DOT_COLOR, PAPER_TEMPLATE_GRID_COLOR, PAPER_TEMPLATE_LINE_COLOR, getPaperTemplateMetrics } from "./src/notebook/paperTemplates";
@@ -35,8 +35,21 @@ import {
 	INLINE_TEXT_BOX_PADDING_X,
 	INLINE_TEXT_BOX_PADDING_Y,
 	INLINE_TEXT_LINE_HEIGHT,
+	applyCanvasTextStyle,
+	getAlignedTextX,
+	getCanvasTextLines,
+	getHorizontalTextCaretIndex,
 	getInlineTextEditorLayout,
-	getWrappedCanvasTextLines,
+	getRenderedTextFontSize,
+	getTextBlockHeight,
+	getTextBlockTop,
+	measureAutoFitTextBox,
+	resolveTextAlignment,
+	resolveTextFontStyle,
+	resolveTextLineSpacing,
+	resolveTextFontWeight,
+	resolveTextVerticalAlignment,
+	resolveTextWordWrap,
 	resizeInlineTextEditor
 } from "./src/text/textLayout";
 import { PreviewStateController, ToolStateController, isShapeTool } from "./src/tools/toolState";
@@ -74,6 +87,10 @@ import type {
 	ShapeAnnotation,
 	StrokeAnnotation,
 	TextAnnotation,
+	TextAlignment,
+	TextFontStyle,
+	TextFontWeight,
+	TextVerticalAlignment,
 	ToolPreset,
 	ToolPresetKind,
 	ToolStateSnapshot
@@ -423,9 +440,11 @@ class NativePdfAnnotatorSession {
 	private transientPopoverBackdropEl: HTMLDivElement | null = null;
 	private inlineTextEditorEl: HTMLTextAreaElement | null = null;
 	private inlineTextEditorFrameEl: HTMLDivElement | null = null;
+	private inlineTextCaretMirrorEl: HTMLDivElement | null = null;
 	private inlineTextTargetId: string | null = null;
 	private inlineTextPoint: AnnotationPoint | null = null;
 	private inlineTextPageNumber: number | null = null;
+	private inlineTextAutoFit = false;
 	private toolPreviewEl: HTMLDivElement | null = null;
 	private mutationObserver: MutationObserver | null = null;
 	private viewResizeObserver: ResizeObserver | null = null;
@@ -502,6 +521,12 @@ class NativePdfAnnotatorSession {
 	private currentTextFontFamily = TEXT_FONT_FAMILIES[0];
 	private currentTextFontSize = 18;
 	private currentTextColor = TEXT_COLOR_PRESETS[0].color;
+	private currentTextFontWeight: TextFontWeight = "normal";
+	private currentTextFontStyle: TextFontStyle = "normal";
+	private currentTextAlignment: TextAlignment = "left";
+	private currentTextVerticalAlignment: TextVerticalAlignment = "middle";
+	private currentTextLineSpacing = INLINE_TEXT_LINE_HEIGHT;
+	private currentTextWordWrap = true;
 	private sessionKeyListenerBound = false;
 	private keyboardNudgeHistoryOpen = false;
 
@@ -718,7 +743,7 @@ class NativePdfAnnotatorSession {
 		if (this.sessionKeyListenerBound) {
 			return;
 		}
-		window.addEventListener("keydown", this.handleSessionKeyDown);
+		window.addEventListener("keydown", this.handleSessionKeyDown, { capture: true });
 		window.addEventListener("keyup", this.handleSessionKeyUp);
 		window.addEventListener("blur", this.handleSessionWindowBlur);
 		this.sessionKeyListenerBound = true;
@@ -728,7 +753,7 @@ class NativePdfAnnotatorSession {
 		if (!this.sessionKeyListenerBound) {
 			return;
 		}
-		window.removeEventListener("keydown", this.handleSessionKeyDown);
+		window.removeEventListener("keydown", this.handleSessionKeyDown, { capture: true });
 		window.removeEventListener("keyup", this.handleSessionKeyUp);
 		window.removeEventListener("blur", this.handleSessionWindowBlur);
 		this.keyboardNudgeHistoryOpen = false;
@@ -1685,9 +1710,7 @@ class NativePdfAnnotatorSession {
 			this.pushHistory();
 		}
 		const pages = new Set(this.selectedTargets.map((target) => target.page));
-		for (const target of this.selectedTargets) {
-			this.moveSelectedTarget(target, deltaX, deltaY);
-		}
+		this.moveSelectedTargetsWithinPage(this.selectedTargets, deltaX, deltaY);
 		this.invalidateAnnotationPageCache();
 		this.isDirty = true;
 		this.scheduleSave();
@@ -3121,12 +3144,12 @@ class NativePdfAnnotatorSession {
 				this.cancelPageRenderJobs();
 				return;
 			}
-			const firstJob = this.pageRenderJobs.entries().next().value as [number, PageRenderJob] | undefined;
-			if (!firstJob) {
+			const firstJob = this.pageRenderJobs.entries().next();
+			if (firstJob.done) {
 				this.renderTelemetry.recordRenderIdle("no active render jobs");
 				return;
 			}
-			const [pageNumber, job] = firstJob;
+			const [pageNumber, job] = firstJob.value;
 			const surface = this.pageSurfaces.get(pageNumber);
 			if (!surface || surface.lastWidth !== job.width || surface.lastHeight !== job.height) {
 				this.pageRenderJobs.delete(pageNumber);
@@ -3251,7 +3274,7 @@ class NativePdfAnnotatorSession {
 				}
 			}, "image/png");
 		});
-		const image = source.ownerDocument.createElement("img");
+		const image = createEl("img");
 		const urlApi = ownerWindow?.URL ?? URL;
 		const objectUrl = urlApi.createObjectURL(blob);
 		image.src = objectUrl;
@@ -3574,16 +3597,35 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		const editingExistingText = !!existingItem;
+		const autoFitTextBox = existingItem
+			? existingItem.manualBoxSize !== true
+			: !boxWidthScale && !boxHeightScale;
 		if (existingItem) {
 			this.selectedTarget = { kind: "text", id: existingItem.id, page: pageNumber };
 			this.selectedTargets = [this.selectedTarget];
+			this.syncCurrentTextStyleFromItem(existingItem);
 		}
-		const layoutSource = (boxWidthScale && boxWidthScale > 0) || (boxHeightScale && boxHeightScale > 0)
+		const autoFitSize = autoFitTextBox && existingItem
+			? this.measureAutoFitTextAnnotation(surface, {
+				...existingItem,
+				autoFit: true,
+				boxWidthScale: undefined
+			})
+			: null;
+		const layoutSource = autoFitSize
+			? ({
+				...existingItem,
+				autoFit: true,
+				boxWidthScale: autoFitSize.width / Math.max(surface.lastWidth, 1),
+				boxHeightScale: autoFitSize.height / Math.max(surface.lastHeight, 1)
+			} as TextAnnotation)
+			: (boxWidthScale && boxWidthScale > 0) || (boxHeightScale && boxHeightScale > 0)
 			? ({ ...existingItem, boxWidthScale, boxHeightScale } as TextAnnotation)
 			: existingItem;
 		const layout = getInlineTextEditorLayout(point, surface.lastWidth, surface.lastHeight, layoutSource);
 		const frame = createDiv();
 		frame.className = "pdf-native-annotator-inline-text-frame";
+		frame.classList.toggle("is-auto-fit", autoFitTextBox);
 		if (editingExistingText) {
 			frame.classList.add("is-editing-selected");
 		}
@@ -3635,35 +3677,67 @@ class NativePdfAnnotatorSession {
 		const editor = createEl("textarea");
 		editor.className = "pdf-native-annotator-inline-text-editor";
 		editor.value = existingItem?.text ?? "";
-		const baseFontSize = existingItem?.fontScale
-			? Math.max(10, existingItem.fontScale * surface.lastWidth)
-			: existingItem?.fontSize ?? this.currentTextFontSize;
+		const editorFontScale = existingItem
+			? this.resolveStoredFontScale(existingItem)
+			: this.getStableTextFontScale(this.currentTextFontSize);
+		const baseFontSize = getRenderedTextFontSize(editorFontScale, surface.lastWidth);
 		const fontFamily = existingItem?.fontFamily ?? this.currentTextFontFamily;
-		editor.wrap = "soft";
+		const fontWeight = existingItem ? resolveTextFontWeight(existingItem) : this.currentTextFontWeight;
+		const fontStyle = existingItem ? resolveTextFontStyle(existingItem) : this.currentTextFontStyle;
+		const textAlign = existingItem ? resolveTextAlignment(existingItem) : this.currentTextAlignment;
+		const verticalAlign = existingItem ? resolveTextVerticalAlignment(existingItem) : this.currentTextVerticalAlignment;
+		const lineSpacing = existingItem ? resolveTextLineSpacing(existingItem) : this.currentTextLineSpacing;
+		const wordWrap = existingItem ? resolveTextWordWrap(existingItem) : this.currentTextWordWrap;
+		editor.wrap = wordWrap ? "soft" : "off";
 		editor.placeholder = "Type text";
-		editor.spellcheck = false;
+		editor.spellcheck = true;
 		editor.autocomplete = "off";
-		editor.autocapitalize = "off";
+		editor.autocapitalize = "sentences";
 		const textColor = existingItem?.color ?? this.currentTextColor;
 		if (existingItem) {
 			this.currentTextFontFamily = fontFamily;
-			this.currentTextFontSize = Math.round(baseFontSize);
 			this.currentTextColor = textColor;
+			this.currentTextFontWeight = fontWeight;
+			this.currentTextFontStyle = fontStyle;
+			this.currentTextAlignment = textAlign;
+			this.currentTextVerticalAlignment = verticalAlign;
+			this.currentTextLineSpacing = lineSpacing;
+			this.currentTextWordWrap = wordWrap;
 		}
 		editor.dataset.textColor = textColor;
 		editor.setCssStyles({
 			color: "transparent",
 			fontSize: `${baseFontSize}px`,
-			fontFamily: `"${fontFamily}", sans-serif`
+			fontFamily: `"${fontFamily}", sans-serif`,
+			fontWeight,
+			fontStyle,
+			textAlign,
+			lineHeight: String(lineSpacing),
+			whiteSpace: wordWrap ? "pre-wrap" : "pre",
+			overflowWrap: wordWrap ? "break-word" : "normal"
 		});
 		frame.appendChild(editor);
+		const caretMirror = createDiv({ cls: "pdf-native-annotator-inline-text-caret-mirror" });
+		caretMirror.setCssStyles({
+			fontSize: `${baseFontSize}px`,
+			fontFamily: `"${fontFamily}", sans-serif`,
+			fontWeight,
+			fontStyle,
+			textAlign,
+			lineHeight: String(lineSpacing),
+			whiteSpace: wordWrap ? "pre-wrap" : "pre",
+			overflowWrap: wordWrap ? "break-word" : "normal"
+		});
+		frame.appendChild(caretMirror);
 		this.addInlineTextFrameHandles(frame, editor, surface.lastWidth, surface.lastHeight);
 		surface.hostEl.appendChild(frame);
 		this.inlineTextEditorFrameEl = frame;
 		this.inlineTextEditorEl = editor;
+		this.inlineTextCaretMirrorEl = caretMirror;
 		this.inlineTextTargetId = existingItem?.id ?? null;
 		this.inlineTextPoint = layout.point;
 		this.inlineTextPageNumber = pageNumber;
+		this.inlineTextAutoFit = autoFitTextBox;
 		const resizeEditor = (): void => {
 			if (editingExistingText || boxWidthScale || boxHeightScale) {
 				editor.setCssStyles({ height: "100%" });
@@ -3678,25 +3752,40 @@ class NativePdfAnnotatorSession {
 		editor.addEventListener("input", () => {
 			this.updateInlineTextEditorBoxFromContent(pageNumber);
 			this.drawPageAnnotations(pageNumber);
+			this.updateInlineTextCaretMirror();
 		});
-		editor.addEventListener("blur", commit, { once: true });
+		editor.addEventListener("select", () => this.updateInlineTextCaretMirror());
+		editor.addEventListener("keyup", () => this.updateInlineTextCaretMirror());
+		editor.addEventListener("pointerup", () => this.updateInlineTextCaretMirror());
+		editor.addEventListener("blur", () => {
+			window.setTimeout(() => {
+				if (this.inlineTextEditorEl !== editor) {
+					return;
+				}
+				const activeElement = editor.ownerDocument.activeElement;
+				if (
+					isHtmlElement(activeElement) &&
+					activeElement.closest(
+						".pdf-native-annotator-toolbar, " +
+						".pdf-native-annotator-font-popover, " +
+						".pdf-native-annotator-color-popover"
+					)
+				) {
+					return;
+				}
+				commit();
+			}, 0);
+		});
 		editor.addEventListener("keydown", (event) => {
 			event.stopPropagation();
-			if (event.key === "Escape") {
-				event.preventDefault();
-				this.finishSessionInlineTextEditor(false);
-				return;
-			}
-			if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-				event.preventDefault();
-				commit();
-			}
 		});
 		resizeEditor();
+		this.updateInlineTextEditorBoxFromContent(pageNumber);
 		this.drawPageAnnotations(pageNumber);
 		window.setTimeout(() => {
 			editor.focus();
 			editor.setSelectionRange(editor.value.length, editor.value.length);
+			this.updateInlineTextCaretMirror();
 		}, 0);
 		this.refreshStatus("Type on page. Enter adds a line, Ctrl/Cmd+Enter saves, Esc cancels.");
 	}
@@ -3704,9 +3793,12 @@ class NativePdfAnnotatorSession {
 	private finishSessionInlineTextEditor(apply: boolean): void {
 		const editor = this.inlineTextEditorEl;
 		const frame = this.inlineTextEditorFrameEl;
-		const point = this.inlineTextPoint;
 		const pageNumber = this.inlineTextPageNumber;
+		const point = pageNumber === null
+			? this.inlineTextPoint
+			: this.getInlineTextFramePoint(pageNumber);
 		const targetId = this.inlineTextTargetId;
+		const autoFit = this.inlineTextAutoFit;
 		const value = editor?.value.trim() ?? "";
 		const editorColor = editor?.dataset.textColor || this.currentTextColor;
 		const frameRect = frame?.getBoundingClientRect() ?? null;
@@ -3719,9 +3811,11 @@ class NativePdfAnnotatorSession {
 		}
 		this.inlineTextEditorEl = null;
 		this.inlineTextEditorFrameEl = null;
+		this.inlineTextCaretMirrorEl = null;
 		this.inlineTextTargetId = null;
 		this.inlineTextPoint = null;
 		this.inlineTextPageNumber = null;
+		this.inlineTextAutoFit = false;
 		if (!apply || !this.annotationDocument || !point || pageNumber === null) {
 			return;
 		}
@@ -3744,6 +3838,7 @@ class NativePdfAnnotatorSession {
 				if (!value.trim()) {
 					this.annotationDocument.textItems = this.annotationDocument.textItems.filter((entry) => entry.id !== targetId);
 					this.selectedTargets = this.selectedTargets.filter((target) => target.id !== targetId);
+					this.selectedTarget = this.selectedTargets[0] ?? null;
 					this.markDirtyAndRedraw("Text annotation deleted");
 					return;
 				}
@@ -3754,10 +3849,23 @@ class NativePdfAnnotatorSession {
 				existing.fontFamily = this.currentTextFontFamily;
 				existing.fontSize = this.currentTextFontSize;
 				existing.fontScale = this.getStableTextFontScale(this.currentTextFontSize);
+				existing.fontWeight = this.currentTextFontWeight;
+				existing.fontStyle = this.currentTextFontStyle;
+				existing.textAlign = this.currentTextAlignment;
+				existing.verticalAlign = this.currentTextVerticalAlignment;
+				existing.lineSpacing = this.currentTextLineSpacing;
+				existing.wordWrap = this.currentTextWordWrap;
+				existing.autoFit = autoFit;
+				existing.manualBoxSize = !autoFit;
 				existing.boxWidthScale = boxWidthScale ?? existing.boxWidthScale;
 				existing.boxHeightScale = boxHeightScale ?? existing.boxHeightScale;
-				this.selectedTarget = { kind: "text", id: existing.id, page: pageNumber };
-				this.selectedTargets = [this.selectedTarget];
+				if (this.currentTool === "text") {
+					this.selectedTarget = null;
+					this.selectedTargets = [];
+				} else {
+					this.selectedTarget = { kind: "text", id: existing.id, page: pageNumber };
+					this.selectedTargets = [this.selectedTarget];
+				}
 				this.markDirtyAndRedraw("Text annotation updated");
 				return;
 			}
@@ -3775,15 +3883,47 @@ class NativePdfAnnotatorSession {
 			fontSize: this.currentTextFontSize,
 			fontFamily: this.currentTextFontFamily,
 			fontScale: this.getStableTextFontScale(this.currentTextFontSize),
+			fontWeight: this.currentTextFontWeight,
+			fontStyle: this.currentTextFontStyle,
+			textAlign: this.currentTextAlignment,
+			verticalAlign: this.currentTextVerticalAlignment,
+			lineSpacing: this.currentTextLineSpacing,
+			wordWrap: this.currentTextWordWrap,
+			autoFit,
+			manualBoxSize: !autoFit,
 			boxWidthScale,
 			boxHeightScale,
 			zIndex: this.getNextPageZIndex(pageNumber),
 			createdAt: new Date().toISOString()
 		};
 		this.annotationDocument.textItems.push(nextText);
-		this.selectedTarget = { kind: "text", id: nextText.id, page: pageNumber };
-		this.selectedTargets = [this.selectedTarget];
+		if (this.currentTool === "text") {
+			this.selectedTarget = null;
+			this.selectedTargets = [];
+		} else {
+			this.selectedTarget = { kind: "text", id: nextText.id, page: pageNumber };
+			this.selectedTargets = [this.selectedTarget];
+		}
 		this.markDirtyAndRedraw("Text annotation added");
+	}
+
+	private getInlineTextFramePoint(pageNumber: number): AnnotationPoint | null {
+		const fallback = this.inlineTextPoint;
+		const frame = this.inlineTextEditorFrameEl;
+		const surface = this.pageSurfaces.get(pageNumber);
+		if (!frame || !surface) {
+			return fallback;
+		}
+		const left = Number(frame.dataset.left);
+		const top = Number(frame.dataset.top);
+		if (!Number.isFinite(left) || !Number.isFinite(top)) {
+			return fallback;
+		}
+		return {
+			x: clamp(left / Math.max(surface.lastWidth, 1), 0.01, 0.96),
+			y: clamp(top / Math.max(surface.lastHeight, 1), 0.01, 0.96),
+			pressure: fallback?.pressure ?? 0.5
+		};
 	}
 
 	private addInlineTextFrameHandles(frame: HTMLDivElement, editor: HTMLTextAreaElement, pageWidth: number, pageHeight: number): void {
@@ -3805,6 +3945,8 @@ class NativePdfAnnotatorSession {
 			handleEl.addEventListener("pointerdown", (event) => {
 				event.preventDefault();
 				event.stopPropagation();
+				this.inlineTextAutoFit = false;
+				frame.classList.remove("is-auto-fit");
 				const startClientX = event.clientX;
 				const startClientY = event.clientY;
 				const startWidth = frame.getBoundingClientRect().width;
@@ -3820,11 +3962,11 @@ class NativePdfAnnotatorSession {
 					let nextWidth = startWidth;
 					let nextHeight = startHeight;
 					if (handle.name.includes("e")) {
-						nextWidth = clamp(startWidth + delta, 180, Math.max(180, pageWidth - startLeft - 12));
+						nextWidth = clamp(startWidth + delta, 44, Math.max(44, pageWidth - startLeft - 12));
 					}
 					if (handle.name.includes("w")) {
-						nextLeft = clamp(startLeft + delta, 8, startLeft + startWidth - 180);
-						nextWidth = clamp(startWidth - (nextLeft - startLeft), 180, Math.max(180, pageWidth - 12));
+						nextLeft = clamp(startLeft + delta, 8, startLeft + startWidth - 44);
+						nextWidth = clamp(startWidth - (nextLeft - startLeft), 44, Math.max(44, pageWidth - 12));
 					}
 					if (handle.name.includes("s")) {
 						nextHeight = clamp(startHeight + deltaY, 36, Math.max(36, pageHeight - startTop - 12));
@@ -3842,6 +3984,10 @@ class NativePdfAnnotatorSession {
 					frame.dataset.left = String(nextLeft);
 					frame.dataset.top = String(nextTop);
 					editor.setCssStyles({ height: `${Math.max(36, nextHeight)}px` });
+					if (this.inlineTextPageNumber !== null) {
+						this.updateInlineTextVerticalAlignment(this.inlineTextPageNumber);
+						this.scheduleInteractionRedraw(this.inlineTextPageNumber);
+					}
 					if (this.inlineTextPoint) {
 						this.inlineTextPoint = {
 							...this.inlineTextPoint,
@@ -3880,6 +4026,18 @@ class NativePdfAnnotatorSession {
 
 	private getStableTextFontScale(fontSize: number): number {
 		return clamp(fontSize / DEFAULT_STROKE_REFERENCE_WIDTH, 0.004, MAX_TEXT_FONT_SCALE);
+	}
+
+	private syncCurrentTextStyleFromItem(item: TextAnnotation): void {
+		this.currentTextFontFamily = item.fontFamily ?? this.currentTextFontFamily;
+		this.currentTextFontSize = Math.round(item.fontSize);
+		this.currentTextColor = item.color ?? this.currentTextColor;
+		this.currentTextFontWeight = resolveTextFontWeight(item);
+		this.currentTextFontStyle = resolveTextFontStyle(item);
+		this.currentTextAlignment = resolveTextAlignment(item);
+		this.currentTextVerticalAlignment = resolveTextVerticalAlignment(item);
+		this.currentTextLineSpacing = resolveTextLineSpacing(item);
+		this.currentTextWordWrap = resolveTextWordWrap(item);
 	}
 
 	private resolveStoredScale(width: number, storedScale: number | undefined, maxScale: number): number {
@@ -3947,7 +4105,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private shouldApplyTextStyleToSelection(): boolean {
-		return this.selectedTargets.some((target) => target.kind === "text");
+		return !this.inlineTextEditorEl && this.selectedTargets.some((target) => target.kind === "text");
 	}
 
 	private applyColorToSelection(color: string, pushHistory = true): void {
@@ -4044,6 +4202,7 @@ class NativePdfAnnotatorSession {
 			const item = this.annotationDocument.textItems.find((entry) => entry.id === target.id);
 			if (item) {
 				item.fontFamily = fontFamily;
+				this.updateAutoFitTextAnnotation(item, target.page);
 			}
 		}
 		this.markDirtyAndRedraw("Text font updated");
@@ -4062,9 +4221,56 @@ class NativePdfAnnotatorSession {
 			if (item) {
 				item.fontSize = fontSize;
 				item.fontScale = this.getStableTextFontScale(fontSize);
+				this.updateAutoFitTextAnnotation(item, target.page);
 			}
 		}
 		this.markDirtyAndRedraw("Text size updated");
+	}
+
+	private applyTextFormattingToSelection(
+		update: Partial<Pick<
+			TextAnnotation,
+			"fontWeight" | "fontStyle" | "textAlign" | "verticalAlign" | "lineSpacing" | "wordWrap"
+		>>,
+		message: string
+	): void {
+		if (!this.annotationDocument || !this.hasSelectedText()) {
+			return;
+		}
+		this.pushHistory();
+		for (const target of this.selectedTargets) {
+			if (target.kind !== "text") {
+				continue;
+			}
+			const item = this.annotationDocument.textItems.find((entry) => entry.id === target.id);
+			if (item) {
+				Object.assign(item, update);
+				this.updateAutoFitTextAnnotation(item, target.page);
+			}
+		}
+		this.markDirtyAndRedraw(message);
+	}
+
+	private applyTextAutoFitToSelection(autoFit: boolean): void {
+		if (!this.annotationDocument || !this.hasSelectedText()) {
+			return;
+		}
+		this.pushHistory();
+		for (const target of this.selectedTargets) {
+			if (target.kind !== "text") {
+				continue;
+			}
+			const item = this.annotationDocument.textItems.find((entry) => entry.id === target.id);
+			if (!item) {
+				continue;
+			}
+			item.autoFit = autoFit;
+			item.manualBoxSize = !autoFit;
+			if (autoFit) {
+				this.updateAutoFitTextAnnotation(item, target.page);
+			}
+		}
+		this.markDirtyAndRedraw(autoFit ? "Text box will resize to fit" : "Text box size fixed");
 	}
 
 	private applyTextBoxWidthToSelection(widthPx: number, pushHistory = true): void {
@@ -4081,6 +4287,8 @@ class NativePdfAnnotatorSession {
 			const item = this.annotationDocument.textItems.find((entry) => entry.id === target.id);
 			const pageWidth = Math.max(this.pageSurfaces.get(target.page)?.lastWidth ?? 1, 1);
 			if (item) {
+				item.autoFit = false;
+				item.manualBoxSize = true;
 				item.boxWidthScale = clamp(widthPx / pageWidth, 0.04, 0.9);
 			}
 		}
@@ -4105,6 +4313,139 @@ class NativePdfAnnotatorSession {
 		this.refreshToolbar();
 	}
 
+	private setTextFontWeight(fontWeight: TextFontWeight): void {
+		this.currentTextFontWeight = fontWeight;
+		this.updateInlineTextEditorStyle();
+		if (this.shouldApplyTextStyleToSelection()) {
+			this.applyTextFormattingToSelection({ fontWeight }, "Text weight updated");
+		}
+		this.refreshToolbar();
+	}
+
+	private setTextFontStyle(fontStyle: TextFontStyle): void {
+		this.currentTextFontStyle = fontStyle;
+		this.updateInlineTextEditorStyle();
+		if (this.shouldApplyTextStyleToSelection()) {
+			this.applyTextFormattingToSelection({ fontStyle }, "Text style updated");
+		}
+		this.refreshToolbar();
+	}
+
+	private setTextAlignment(textAlign: TextAlignment): void {
+		this.currentTextAlignment = textAlign;
+		this.updateInlineTextEditorStyle();
+		if (this.shouldApplyTextStyleToSelection()) {
+			this.applyTextFormattingToSelection({ textAlign }, "Text alignment updated");
+		}
+		this.refreshToolbar();
+	}
+
+	private setTextVerticalAlignment(verticalAlign: TextVerticalAlignment): void {
+		this.currentTextVerticalAlignment = verticalAlign;
+		this.updateInlineTextEditorStyle();
+		if (this.shouldApplyTextStyleToSelection()) {
+			this.applyTextFormattingToSelection({ verticalAlign }, "Text vertical alignment updated");
+		}
+		this.refreshToolbar();
+	}
+
+	private setTextLineSpacing(lineSpacing: number): void {
+		this.currentTextLineSpacing = clamp(
+			Number.isFinite(lineSpacing) ? lineSpacing : INLINE_TEXT_LINE_HEIGHT,
+			0.8,
+			3
+		);
+		this.updateInlineTextEditorStyle();
+		if (this.shouldApplyTextStyleToSelection()) {
+			this.applyTextFormattingToSelection(
+				{ lineSpacing: this.currentTextLineSpacing },
+				"Text line spacing updated"
+			);
+		}
+		this.refreshToolbar();
+	}
+
+	private setTextWordWrap(wordWrap: boolean): void {
+		this.currentTextWordWrap = wordWrap;
+		if (this.inlineTextEditorEl) {
+			this.inlineTextEditorEl.wrap = wordWrap ? "soft" : "off";
+		}
+		this.updateInlineTextEditorStyle();
+		if (this.shouldApplyTextStyleToSelection()) {
+			this.applyTextFormattingToSelection({ wordWrap }, wordWrap ? "Text wrapping enabled" : "Text wrapping disabled");
+		}
+		this.refreshToolbar();
+	}
+
+	private setTextAutoFit(autoFit: boolean): void {
+		if (this.inlineTextEditorFrameEl && this.inlineTextEditorEl) {
+			this.inlineTextAutoFit = autoFit;
+			this.inlineTextEditorFrameEl.classList.toggle("is-auto-fit", autoFit);
+			if (this.inlineTextPageNumber !== null) {
+				this.updateInlineTextEditorBoxFromContent(this.inlineTextPageNumber);
+				this.drawPageAnnotations(this.inlineTextPageNumber);
+			}
+		}
+		if (this.shouldApplyTextStyleToSelection()) {
+			this.applyTextAutoFitToSelection(autoFit);
+		}
+		this.refreshToolbar();
+	}
+
+	private transformTextCase(mode: "sentence" | "lower" | "upper" | "title" | "toggle"): void {
+		const transform = (value: string): string => {
+			if (mode === "lower") {
+				return value.toLocaleLowerCase();
+			}
+			if (mode === "upper") {
+				return value.toLocaleUpperCase();
+			}
+			if (mode === "title") {
+				return value.toLocaleLowerCase().replace(/(^|[\s\-/])([a-z])/g, (_match, prefix: string, letter: string) => (
+					`${prefix}${letter.toLocaleUpperCase()}`
+				));
+			}
+			if (mode === "sentence") {
+				return value.toLocaleLowerCase().replace(/(^|[.!?]\s+)([a-z])/g, (_match, prefix: string, letter: string) => (
+					`${prefix}${letter.toLocaleUpperCase()}`
+				));
+			}
+			return Array.from(value).map((character) => {
+				const upper = character.toLocaleUpperCase();
+				const lower = character.toLocaleLowerCase();
+				return character === upper && character !== lower ? lower : upper;
+			}).join("");
+		};
+		if (this.inlineTextEditorEl) {
+			const start = this.inlineTextEditorEl.selectionStart;
+			const end = this.inlineTextEditorEl.selectionEnd;
+			this.inlineTextEditorEl.value = transform(this.inlineTextEditorEl.value);
+			this.inlineTextEditorEl.setSelectionRange(start, end);
+			if (this.inlineTextPageNumber !== null) {
+				this.updateInlineTextEditorBoxFromContent(this.inlineTextPageNumber);
+				this.drawPageAnnotations(this.inlineTextPageNumber);
+			}
+			this.updateInlineTextCaretMirror();
+			return;
+		}
+		if (!this.annotationDocument || !this.hasSelectedText()) {
+			this.refreshStatus("Select or edit text before changing case");
+			return;
+		}
+		this.pushHistory();
+		for (const target of this.selectedTargets) {
+			if (target.kind !== "text") {
+				continue;
+			}
+			const item = this.annotationDocument.textItems.find((entry) => entry.id === target.id);
+			if (item) {
+				item.text = transform(item.text);
+				this.updateAutoFitTextAnnotation(item, target.page);
+			}
+		}
+		this.markDirtyAndRedraw("Text case updated");
+	}
+
 	private setTextColor(color: string, pushHistory = true, refreshToolbar = true): void {
 		this.currentTextColor = color;
 		this.plugin.updateTextColor(color);
@@ -4126,12 +4467,17 @@ class NativePdfAnnotatorSession {
 	private setTextBoxWidth(widthPx: number, pushHistory = true): void {
 		const safeWidth = clamp(Math.round(widthPx), 160, 760);
 		if (this.inlineTextEditorFrameEl && this.inlineTextEditorEl) {
+			this.inlineTextAutoFit = false;
+			this.inlineTextEditorFrameEl.classList.remove("is-auto-fit");
 			this.inlineTextEditorFrameEl.setCssStyles({ width: `${safeWidth}px` });
 			const surface = this.inlineTextPageNumber ? this.pageSurfaces.get(this.inlineTextPageNumber) : null;
 			if (this.inlineTextEditorFrameEl.classList.contains("is-editing-selected")) {
 				this.inlineTextEditorEl.setCssStyles({ height: "100%" });
 			} else {
 				resizeInlineTextEditor(this.inlineTextEditorEl, (surface?.lastHeight ?? 600) * 0.42);
+			}
+			if (this.inlineTextPageNumber !== null) {
+				this.updateInlineTextVerticalAlignment(this.inlineTextPageNumber);
 			}
 		}
 		if (this.shouldApplyTextStyleToSelection()) {
@@ -4143,21 +4489,60 @@ class NativePdfAnnotatorSession {
 		if (!this.inlineTextEditorEl) {
 			return;
 		}
+		const surface = this.inlineTextPageNumber ? this.pageSurfaces.get(this.inlineTextPageNumber) : null;
+		const displayFontSize = surface
+			? getRenderedTextFontSize(this.getStableTextFontScale(this.currentTextFontSize), surface.lastWidth)
+			: this.currentTextFontSize;
 		this.inlineTextEditorEl.dataset.textColor = this.currentTextColor;
+		this.inlineTextEditorEl.wrap = this.currentTextWordWrap ? "soft" : "off";
 		this.inlineTextEditorEl.setCssStyles({
 			color: "transparent",
 			fontFamily: `"${this.currentTextFontFamily}", sans-serif`,
-			fontSize: `${this.currentTextFontSize}px`
+			fontSize: `${displayFontSize}px`,
+			fontWeight: this.currentTextFontWeight,
+			fontStyle: this.currentTextFontStyle,
+			textAlign: this.currentTextAlignment,
+			lineHeight: String(this.currentTextLineSpacing),
+			whiteSpace: this.currentTextWordWrap ? "pre-wrap" : "pre",
+			overflowWrap: this.currentTextWordWrap ? "break-word" : "normal"
 		});
-		const surface = this.inlineTextPageNumber ? this.pageSurfaces.get(this.inlineTextPageNumber) : null;
+		this.inlineTextCaretMirrorEl?.setCssStyles({
+			fontFamily: `"${this.currentTextFontFamily}", sans-serif`,
+			fontSize: `${displayFontSize}px`,
+			fontWeight: this.currentTextFontWeight,
+			fontStyle: this.currentTextFontStyle,
+			textAlign: this.currentTextAlignment,
+			lineHeight: String(this.currentTextLineSpacing),
+			whiteSpace: this.currentTextWordWrap ? "pre-wrap" : "pre",
+			overflowWrap: this.currentTextWordWrap ? "break-word" : "normal"
+		});
 		if (this.inlineTextEditorFrameEl?.classList.contains("is-editing-selected")) {
 			this.inlineTextEditorEl.setCssStyles({ height: "100%" });
 		} else {
 			resizeInlineTextEditor(this.inlineTextEditorEl, (surface?.lastHeight ?? 600) * 0.42);
 		}
 		if (this.inlineTextPageNumber !== null) {
+			this.updateInlineTextEditorBoxFromContent(this.inlineTextPageNumber);
 			this.drawPageAnnotations(this.inlineTextPageNumber);
+			this.updateInlineTextCaretMirror();
 		}
+	}
+
+	private updateInlineTextCaretMirror(): void {
+		const editor = this.inlineTextEditorEl;
+		const mirror = this.inlineTextCaretMirrorEl;
+		if (!editor || !mirror) {
+			return;
+		}
+		const selectionStart = editor.selectionStart ?? editor.value.length;
+		const selectionEnd = editor.selectionEnd ?? selectionStart;
+		const caret = createSpan({ cls: "pdf-native-annotator-inline-text-caret" });
+		caret.classList.toggle("is-hidden", selectionStart !== selectionEnd);
+		mirror.replaceChildren(
+			document.createTextNode(editor.value.slice(0, selectionStart)),
+			caret,
+			document.createTextNode(editor.value.slice(selectionEnd))
+		);
 	}
 
 	private applyPreset(presetId: string): void {
@@ -5095,6 +5480,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.closeTransientPopovers("pagelist");
 		this.ensureTransientPopoverBackdrop();
+		document.body.classList.add("pdf-native-annotator-page-list-open");
 		const popover = createDiv();
 		popover.className = "modal pdf-native-annotator-page-list-popover";
 		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Pages" });
@@ -5778,21 +6164,40 @@ class NativePdfAnnotatorSession {
 		this.ensureTransientPopoverBackdrop();
 		const popover = createDiv();
 		popover.className = "modal pdf-native-annotator-font-popover";
-		const title = popover.createDiv({ cls: "pdf-native-annotator-font-popover-title", text: "Font" });
+		const title = popover.createDiv({ cls: "pdf-native-annotator-font-popover-title", text: "Text style" });
 		title.appendChild(this.createPopoverCloseButton(() => this.closeFontPopover()));
 		const preview = popover.createDiv({ cls: "pdf-native-annotator-font-preview", text: "The quick brown fox" });
 		const selectionSummary = popover.createDiv({ cls: "pdf-native-annotator-font-selection-summary" });
 		let fontSelect: HTMLSelectElement | null = null;
 		let sizeInput: HTMLInputElement | null = null;
+		let lineSpacingInput: HTMLInputElement | null = null;
+		let boldButton: HTMLButtonElement | null = null;
+		let italicButton: HTMLButtonElement | null = null;
+		let wordWrapButton: HTMLButtonElement | null = null;
+		let autoFitButton: HTMLButtonElement | null = null;
+		let fixedBoxButton: HTMLButtonElement | null = null;
+		const alignmentButtons = new Map<TextAlignment, HTMLButtonElement>();
+		const verticalAlignmentButtons = new Map<TextVerticalAlignment, HTMLButtonElement>();
 		const syncPopoverState = (): void => {
 			const family = this.getCurrentTextFontFamilyForMenu();
 			const size = this.getCurrentTextSizeForMenu();
 			const color = this.getCurrentTextColorForMenu();
+			const fontWeight = this.getCurrentTextFontWeightForMenu();
+			const fontStyle = this.getCurrentTextFontStyleForMenu();
+			const textAlign = this.getCurrentTextAlignmentForMenu();
+			const verticalAlign = this.getCurrentTextVerticalAlignmentForMenu();
+			const lineSpacing = this.getCurrentTextLineSpacingForMenu();
+			const wordWrap = this.getCurrentTextWordWrapForMenu();
+			const autoFit = this.getCurrentTextAutoFitForMenu();
 			const summary = this.getTextSelectionStyleSummary();
 			preview.setCssStyles({
 				fontFamily: `"${family}", sans-serif`,
 				fontSize: `${clamp(size, 12, 40)}px`,
-				color
+				color,
+				fontWeight,
+				fontStyle,
+				textAlign,
+				lineHeight: String(lineSpacing)
 			});
 			selectionSummary.textContent = summary;
 			selectionSummary.classList.toggle("is-hidden", summary.length === 0);
@@ -5802,6 +6207,53 @@ class NativePdfAnnotatorSession {
 			if (sizeInput && sizeInput !== document.activeElement) {
 				sizeInput.value = String(size);
 			}
+			if (lineSpacingInput && lineSpacingInput !== document.activeElement) {
+				lineSpacingInput.value = lineSpacing.toFixed(2);
+			}
+			boldButton?.classList.toggle("is-active", fontWeight === "bold");
+			boldButton?.setAttribute("aria-pressed", String(fontWeight === "bold"));
+			italicButton?.classList.toggle("is-active", fontStyle === "italic");
+			italicButton?.setAttribute("aria-pressed", String(fontStyle === "italic"));
+			for (const [alignment, alignmentButton] of alignmentButtons) {
+				const active = alignment === textAlign;
+				alignmentButton.classList.toggle("is-active", active);
+				alignmentButton.setAttribute("aria-pressed", String(active));
+			}
+			for (const [alignment, alignmentButton] of verticalAlignmentButtons) {
+				const active = alignment === verticalAlign;
+				alignmentButton.classList.toggle("is-active", active);
+				alignmentButton.setAttribute("aria-pressed", String(active));
+			}
+			wordWrapButton?.classList.toggle("is-active", wordWrap);
+			wordWrapButton?.setAttribute("aria-pressed", String(wordWrap));
+			autoFitButton?.classList.toggle("is-active", autoFit);
+			autoFitButton?.setAttribute("aria-pressed", String(autoFit));
+			fixedBoxButton?.classList.toggle("is-active", !autoFit);
+			fixedBoxButton?.setAttribute("aria-pressed", String(!autoFit));
+		};
+		const createStyleButton = (
+			parent: HTMLElement,
+			icon: string,
+			label: string,
+			onClick: () => void
+		): HTMLButtonElement => {
+			const styleButton = parent.createEl("button", {
+				type: "button",
+				cls: "clickable-icon pdf-native-annotator-text-style-button",
+				attr: {
+					"aria-label": label,
+					title: label,
+					"aria-pressed": "false"
+				}
+			});
+			setIcon(styleButton, icon);
+			styleButton.addEventListener("click", (event) => {
+				event.preventDefault();
+				event.stopPropagation();
+				onClick();
+				syncPopoverState();
+			});
+			return styleButton;
 		};
 		const fontRow = popover.createDiv({ cls: "pdf-native-annotator-font-select-row" });
 		fontSelect = fontRow.createEl("select", { cls: "dropdown pdf-native-annotator-font-select" });
@@ -5831,6 +6283,88 @@ class NativePdfAnnotatorSession {
 			this.setTextFontSize(nextSize);
 			syncPopoverState();
 		});
+		const formatRow = popover.createDiv({ cls: "pdf-native-annotator-text-style-row" });
+		formatRow.createSpan({ cls: "pdf-native-annotator-text-style-label", text: "Style" });
+		const formatControls = formatRow.createDiv({ cls: "pdf-native-annotator-text-style-group" });
+		boldButton = createStyleButton(formatControls, "bold", "Bold", () => {
+			this.setTextFontWeight(this.getCurrentTextFontWeightForMenu() === "bold" ? "normal" : "bold");
+		});
+		italicButton = createStyleButton(formatControls, "italic", "Italic", () => {
+			this.setTextFontStyle(this.getCurrentTextFontStyleForMenu() === "italic" ? "normal" : "italic");
+		});
+		const alignmentRow = popover.createDiv({ cls: "pdf-native-annotator-text-style-row" });
+		alignmentRow.createSpan({ cls: "pdf-native-annotator-text-style-label", text: "Alignment" });
+		const alignmentControls = alignmentRow.createDiv({ cls: "pdf-native-annotator-text-style-group" });
+		for (const alignment of ["left", "center", "right"] as TextAlignment[]) {
+			const label = `${alignment[0].toUpperCase()}${alignment.slice(1)} align`;
+			const alignmentButton = createStyleButton(alignmentControls, `align-${alignment}`, label, () => {
+				this.setTextAlignment(alignment);
+			});
+			alignmentButtons.set(alignment, alignmentButton);
+		}
+		const verticalAlignmentRow = popover.createDiv({ cls: "pdf-native-annotator-text-style-row" });
+		verticalAlignmentRow.createSpan({ cls: "pdf-native-annotator-text-style-label", text: "Vertical" });
+		const verticalAlignmentControls = verticalAlignmentRow.createDiv({ cls: "pdf-native-annotator-text-style-group" });
+		const verticalAlignmentIcons: Record<TextVerticalAlignment, string> = {
+			top: "align-vertical-justify-start",
+			middle: "align-vertical-justify-center",
+			bottom: "align-vertical-justify-end"
+		};
+		for (const alignment of ["top", "middle", "bottom"] as TextVerticalAlignment[]) {
+			const label = `${alignment[0].toUpperCase()}${alignment.slice(1)} align`;
+			const alignmentButton = createStyleButton(
+				verticalAlignmentControls,
+				verticalAlignmentIcons[alignment],
+				label,
+				() => this.setTextVerticalAlignment(alignment)
+			);
+			verticalAlignmentButtons.set(alignment, alignmentButton);
+		}
+		const lineSpacingRow = popover.createDiv({ cls: "pdf-native-annotator-font-control-row" });
+		lineSpacingRow.createSpan({ text: "Line spacing" });
+		lineSpacingInput = lineSpacingRow.createEl("input", {
+			type: "number",
+			cls: "pdf-native-annotator-font-number-input",
+			attr: {
+				min: "0.8",
+				max: "3",
+				step: "0.05"
+			}
+		});
+		lineSpacingInput.value = this.getCurrentTextLineSpacingForMenu().toFixed(2);
+		lineSpacingInput.addEventListener("change", () => {
+			this.setTextLineSpacing(Number(lineSpacingInput?.value ?? this.currentTextLineSpacing));
+			syncPopoverState();
+		});
+		const layoutRow = popover.createDiv({ cls: "pdf-native-annotator-text-style-row" });
+		layoutRow.createSpan({ cls: "pdf-native-annotator-text-style-label", text: "Text box" });
+		const layoutControls = layoutRow.createDiv({ cls: "pdf-native-annotator-text-style-group" });
+		wordWrapButton = createStyleButton(layoutControls, "wrap-text", "Toggle word wrap", () => {
+			this.setTextWordWrap(!this.getCurrentTextWordWrapForMenu());
+		});
+		autoFitButton = createStyleButton(layoutControls, "scan-text", "Resize box to fit text", () => {
+			this.setTextAutoFit(true);
+		});
+		fixedBoxButton = createStyleButton(layoutControls, "square", "Keep text box size fixed", () => {
+			this.setTextAutoFit(false);
+		});
+		const caseRow = popover.createDiv({ cls: "pdf-native-annotator-font-control-row" });
+		caseRow.createSpan({ text: "Change case" });
+		const caseSelect = caseRow.createEl("select", { cls: "dropdown pdf-native-annotator-case-select" });
+		caseSelect.createEl("option", { text: "Choose...", value: "" });
+		caseSelect.createEl("option", { text: "Sentence case", value: "sentence" });
+		caseSelect.createEl("option", { text: "lowercase", value: "lower" });
+		caseSelect.createEl("option", { text: "UPPERCASE", value: "upper" });
+		caseSelect.createEl("option", { text: "Title Case", value: "title" });
+		caseSelect.createEl("option", { text: "tOGGLE cASE", value: "toggle" });
+		caseSelect.addEventListener("change", () => {
+			const mode = caseSelect.value as "sentence" | "lower" | "upper" | "title" | "toggle" | "";
+			if (mode) {
+				this.transformTextCase(mode);
+				caseSelect.value = "";
+				syncPopoverState();
+			}
+		});
 		popover.addEventListener("pointerdown", (event) => {
 			event.stopPropagation();
 		});
@@ -5858,11 +6392,25 @@ class NativePdfAnnotatorSession {
 		const sizes = new Set(items.map((item) => Math.round(item.fontSize)));
 		const colors = new Set(items.map((item) => (item.color ?? this.currentTextColor).toLowerCase()));
 		const widths = new Set(items.map((item) => item.boxWidthScale ? item.boxWidthScale.toFixed(4) : "auto"));
+		const weights = new Set(items.map((item) => resolveTextFontWeight(item)));
+		const styles = new Set(items.map((item) => resolveTextFontStyle(item)));
+		const alignments = new Set(items.map((item) => resolveTextAlignment(item)));
+		const verticalAlignments = new Set(items.map((item) => resolveTextVerticalAlignment(item)));
+		const lineSpacings = new Set(items.map((item) => resolveTextLineSpacing(item).toFixed(2)));
+		const wrappingModes = new Set(items.map((item) => resolveTextWordWrap(item)));
+		const fitModes = new Set(items.map((item) => item.autoFit === true));
 		const mixed = [
 			families.size > 1 ? "font" : null,
 			sizes.size > 1 ? "size" : null,
 			colors.size > 1 ? "color" : null,
-			widths.size > 1 ? "box" : null
+			widths.size > 1 ? "box" : null,
+			weights.size > 1 ? "weight" : null,
+			styles.size > 1 ? "style" : null,
+			alignments.size > 1 ? "alignment" : null,
+			verticalAlignments.size > 1 ? "vertical alignment" : null,
+			lineSpacings.size > 1 ? "line spacing" : null,
+			wrappingModes.size > 1 ? "wrapping" : null,
+			fitModes.size > 1 ? "fit mode" : null
 		].filter((entry): entry is string => !!entry);
 		return mixed.length > 0
 			? `${items.length} text boxes selected; mixed ${mixed.join(", ")}. Changes apply to all selected text boxes.`
@@ -5870,6 +6418,9 @@ class NativePdfAnnotatorSession {
 	}
 
 	private getCurrentTextFontFamilyForMenu(): string {
+		if (this.inlineTextEditorEl) {
+			return this.currentTextFontFamily;
+		}
 		if (this.annotationDocument && this.hasSelectedText()) {
 			const item = this.getSelectedTextItems()[0] ?? null;
 			return item?.fontFamily ?? this.currentTextFontFamily;
@@ -5878,6 +6429,9 @@ class NativePdfAnnotatorSession {
 	}
 
 	private getCurrentTextSizeForMenu(): number {
+		if (this.inlineTextEditorEl) {
+			return this.currentTextFontSize;
+		}
 		if (this.annotationDocument && this.hasSelectedText()) {
 			const item = this.getSelectedTextItems()[0] ?? null;
 			return item ? Math.round(item.fontSize) : this.currentTextFontSize;
@@ -5886,11 +6440,90 @@ class NativePdfAnnotatorSession {
 	}
 
 	private getCurrentTextColorForMenu(): string {
+		if (this.inlineTextEditorEl) {
+			return this.currentTextColor;
+		}
 		if (this.annotationDocument && this.hasSelectedText()) {
 			const item = this.getSelectedTextItems()[0] ?? null;
 			return item?.color ?? this.currentTextColor;
 		}
 		return this.currentTextColor;
+	}
+
+	private getCurrentTextFontWeightForMenu(): TextFontWeight {
+		if (this.inlineTextEditorEl) {
+			return this.currentTextFontWeight;
+		}
+		if (this.annotationDocument && this.hasSelectedText()) {
+			const item = this.getSelectedTextItems()[0] ?? null;
+			return item ? resolveTextFontWeight(item) : this.currentTextFontWeight;
+		}
+		return this.currentTextFontWeight;
+	}
+
+	private getCurrentTextFontStyleForMenu(): TextFontStyle {
+		if (this.inlineTextEditorEl) {
+			return this.currentTextFontStyle;
+		}
+		if (this.annotationDocument && this.hasSelectedText()) {
+			const item = this.getSelectedTextItems()[0] ?? null;
+			return item ? resolveTextFontStyle(item) : this.currentTextFontStyle;
+		}
+		return this.currentTextFontStyle;
+	}
+
+	private getCurrentTextAlignmentForMenu(): TextAlignment {
+		if (this.inlineTextEditorEl) {
+			return this.currentTextAlignment;
+		}
+		if (this.annotationDocument && this.hasSelectedText()) {
+			const item = this.getSelectedTextItems()[0] ?? null;
+			return item ? resolveTextAlignment(item) : this.currentTextAlignment;
+		}
+		return this.currentTextAlignment;
+	}
+
+	private getCurrentTextVerticalAlignmentForMenu(): TextVerticalAlignment {
+		if (this.inlineTextEditorEl) {
+			return this.currentTextVerticalAlignment;
+		}
+		if (this.annotationDocument && this.hasSelectedText()) {
+			const item = this.getSelectedTextItems()[0] ?? null;
+			return item ? resolveTextVerticalAlignment(item) : this.currentTextVerticalAlignment;
+		}
+		return this.currentTextVerticalAlignment;
+	}
+
+	private getCurrentTextLineSpacingForMenu(): number {
+		if (this.inlineTextEditorEl) {
+			return this.currentTextLineSpacing;
+		}
+		if (this.annotationDocument && this.hasSelectedText()) {
+			const item = this.getSelectedTextItems()[0] ?? null;
+			return item ? resolveTextLineSpacing(item) : this.currentTextLineSpacing;
+		}
+		return this.currentTextLineSpacing;
+	}
+
+	private getCurrentTextWordWrapForMenu(): boolean {
+		if (this.inlineTextEditorEl) {
+			return this.currentTextWordWrap;
+		}
+		if (this.annotationDocument && this.hasSelectedText()) {
+			const item = this.getSelectedTextItems()[0] ?? null;
+			return item ? resolveTextWordWrap(item) : this.currentTextWordWrap;
+		}
+		return this.currentTextWordWrap;
+	}
+
+	private getCurrentTextAutoFitForMenu(): boolean {
+		if (this.inlineTextEditorEl) {
+			return this.inlineTextAutoFit;
+		}
+		if (this.annotationDocument && this.hasSelectedText()) {
+			return this.getSelectedTextItems()[0]?.autoFit === true;
+		}
+		return true;
 	}
 
 	private getCurrentTextBoxWidthForMenu(): number {
@@ -6639,6 +7272,7 @@ class NativePdfAnnotatorSession {
 		this.colorPopoverEl = null;
 		this.removeTransientPopoverKeyListenerIfIdle();
 		this.removeTransientPopoverBackdropIfIdle();
+		this.refocusInlineTextEditor();
 	}
 
 	private readonly handleTransientPopoverKeyDown = (event: KeyboardEvent): void => {
@@ -6691,6 +7325,7 @@ class NativePdfAnnotatorSession {
 	private closePageListPopover(): void {
 		this.pageListPopoverEl?.remove();
 		this.pageListPopoverEl = null;
+		document.body.classList.remove("pdf-native-annotator-page-list-open");
 		this.removeTransientPopoverKeyListenerIfIdle();
 		this.removeTransientPopoverBackdropIfIdle();
 	}
@@ -6700,6 +7335,20 @@ class NativePdfAnnotatorSession {
 		this.fontPopoverEl = null;
 		this.removeTransientPopoverKeyListenerIfIdle();
 		this.removeTransientPopoverBackdropIfIdle();
+		this.refocusInlineTextEditor();
+	}
+
+	private refocusInlineTextEditor(): void {
+		const editor = this.inlineTextEditorEl;
+		if (!editor) {
+			return;
+		}
+		window.setTimeout(() => {
+			if (this.inlineTextEditorEl === editor && editor.isConnected) {
+				editor.focus();
+				this.updateInlineTextCaretMirror();
+			}
+		}, 0);
 	}
 
 	private getActiveWidth(): number {
@@ -7059,6 +7708,11 @@ class NativePdfAnnotatorSession {
 	}
 
 	private readonly handleSessionKeyDown = (event: KeyboardEvent): void => {
+		if (this.handleInlineTextEditorShortcut(event)) {
+			event.preventDefault();
+			event.stopPropagation();
+			return;
+		}
 		if (event.key === "Escape" && this.isSessionEscapeEligible(event) && this.cancelActiveSessionInteraction()) {
 			event.preventDefault();
 			return;
@@ -7147,6 +7801,73 @@ class NativePdfAnnotatorSession {
 		}
 	};
 
+	private handleInlineTextEditorShortcut(event: KeyboardEvent): boolean {
+		const editor = this.inlineTextEditorEl;
+		if (!editor || (event.target !== editor && editor.ownerDocument.activeElement !== editor)) {
+			return false;
+		}
+		const key = event.key.toLowerCase();
+		const isModifierShortcut = (event.ctrlKey || event.metaKey) && !event.altKey;
+		if (key === "arrowleft" || key === "arrowright") {
+			this.moveInlineTextCaretHorizontally(
+				editor,
+				key === "arrowleft" ? "left" : "right",
+				event.shiftKey,
+				isModifierShortcut || event.altKey
+			);
+			return true;
+		}
+		if (isModifierShortcut && key === "b") {
+			this.setTextFontWeight(this.currentTextFontWeight === "bold" ? "normal" : "bold");
+			return true;
+		}
+		if (isModifierShortcut && key === "i") {
+			this.setTextFontStyle(this.currentTextFontStyle === "italic" ? "normal" : "italic");
+			return true;
+		}
+		if (isModifierShortcut && key === "enter") {
+			this.finishSessionInlineTextEditor(true);
+			return true;
+		}
+		if (key === "escape") {
+			this.finishSessionInlineTextEditor(false);
+			return true;
+		}
+		return false;
+	}
+
+	private moveInlineTextCaretHorizontally(
+		editor: HTMLTextAreaElement,
+		direction: "left" | "right",
+		extendSelection: boolean,
+		byWord: boolean
+	): void {
+		const start = editor.selectionStart;
+		const end = editor.selectionEnd;
+		if (!extendSelection && start !== end) {
+			const collapsedPosition = direction === "left" ? start : end;
+			editor.setSelectionRange(collapsedPosition, collapsedPosition);
+			this.updateInlineTextCaretMirror();
+			return;
+		}
+		if (!extendSelection) {
+			const nextPosition = getHorizontalTextCaretIndex(editor.value, start, direction, byWord);
+			editor.setSelectionRange(nextPosition, nextPosition);
+			this.updateInlineTextCaretMirror();
+			return;
+		}
+		const selectionDirection = editor.selectionDirection;
+		const anchor = selectionDirection === "backward" ? end : start;
+		const focus = selectionDirection === "backward" ? start : end;
+		const nextFocus = getHorizontalTextCaretIndex(editor.value, focus, direction, byWord);
+		editor.setSelectionRange(
+			Math.min(anchor, nextFocus),
+			Math.max(anchor, nextFocus),
+			nextFocus < anchor ? "backward" : "forward"
+		);
+		this.updateInlineTextCaretMirror();
+	}
+
 	private isSessionEscapeEligible(event: KeyboardEvent): boolean {
 		if (!this.annotationMode || !this.isLeafActive()) {
 			return false;
@@ -7205,9 +7926,7 @@ class NativePdfAnnotatorSession {
 		if (!item) {
 			return;
 		}
-		this.currentTextFontFamily = item.fontFamily ?? this.currentTextFontFamily;
-		this.currentTextFontSize = Math.round(item.fontSize);
-		this.currentTextColor = item.color ?? this.currentTextColor;
+		this.syncCurrentTextStyleFromItem(item);
 		this.beginSessionInlineTextEditor(target.page, { x: item.x, y: item.y, pressure: 0.5 }, item);
 	}
 
@@ -7377,7 +8096,11 @@ class NativePdfAnnotatorSession {
 	}
 
 	private readonly handlePointerDown = (event: PointerEvent): void => {
-		if (this.activePdfPointerId === event.pointerId) {
+		if (this.activePdfPointerId !== null) {
+			if (this.activePdfPointerId !== event.pointerId) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
 			return;
 		}
 		const canvas = isHtmlCanvasElement(event.currentTarget) ? event.currentTarget : null;
@@ -7540,74 +8263,23 @@ class NativePdfAnnotatorSession {
 			if (hit?.kind === "text" && this.annotationDocument) {
 				const existing = this.annotationDocument.textItems.find((entry) => entry.id === hit.id);
 				if (existing) {
-					const alreadySelected = this.selectedTargets.some((target) => target.kind === "text" && target.id === hit.id && target.page === pageNumber);
-					if (!alreadySelected) {
-						try {
-							canvas.releasePointerCapture(event.pointerId);
-						} catch {
-							// noop
-						}
-						this.unbindPdfPointerDocumentTracking();
-						this.selectedTarget = hit;
-						this.selectedTargets = [hit];
-						this.lastSelectionRegion = null;
-						this.drawPageAnnotations(pageNumber);
-						this.refreshToolbar();
-						this.refreshStatus("Text box selected. Drag border/handles, or click again to edit.");
-						return;
-					}
-					const handle = this.getSelectionHandleHit(pageNumber, point);
-					if (handle) {
-						this.pushHistory();
-						this.dragAnchor = point;
-						this.dragMoved = false;
-						this.activeResizeHandle = handle;
-						this.pointerPage = pageNumber;
-						canvas.setCssStyles({ cursor: this.getCursorForHandle(handle) });
-						this.refreshStatus("Resize text box");
-						return;
-					}
-					if (this.isPointOnTextBoxBorder(existing, point, pageNumber)) {
-						this.pushHistory();
-						this.dragAnchor = point;
-						this.dragMoved = false;
-						this.activeResizeHandle = null;
-						this.pointerPage = pageNumber;
-						canvas.setCssStyles({ cursor: "grabbing" });
-						this.refreshStatus("Moving text box");
-						return;
-					}
-					this.currentTextFontFamily = existing.fontFamily ?? this.currentTextFontFamily;
-					this.currentTextFontSize = Math.round(existing.fontSize);
-					this.currentTextColor = existing.color ?? this.currentTextColor;
 					try {
 						canvas.releasePointerCapture(event.pointerId);
 					} catch {
 						// noop
 					}
 					this.unbindPdfPointerDocumentTracking();
+					this.selectedTarget = hit;
+					this.selectedTargets = [hit];
+					this.lastSelectionRegion = null;
+					this.syncCurrentTextStyleFromItem(existing);
 					this.beginSessionInlineTextEditor(pageNumber, { x: existing.x, y: existing.y, pressure: point.pressure }, existing);
 					return;
 				}
 			}
-			const selectedTextTarget = this.selectedTargets.find((target) => target.kind === "text" && target.page === pageNumber);
-			if (selectedTextTarget && this.annotationDocument) {
-				const selectedText = this.annotationDocument.textItems.find((entry) => entry.id === selectedTextTarget.id);
-				if (selectedText) {
-					try {
-						canvas.releasePointerCapture(event.pointerId);
-					} catch {
-						// noop
-					}
-					this.unbindPdfPointerDocumentTracking();
-					this.currentTextFontFamily = selectedText.fontFamily ?? this.currentTextFontFamily;
-					this.currentTextFontSize = Math.round(selectedText.fontSize);
-					this.currentTextColor = selectedText.color ?? this.currentTextColor;
-					this.beginSessionInlineTextEditor(pageNumber, { x: selectedText.x, y: selectedText.y, pressure: point.pressure }, selectedText);
-					this.refreshStatus("Editing selected text box");
-					return;
-				}
-			}
+			this.selectedTarget = null;
+			this.selectedTargets = [];
+			this.lastSelectionRegion = null;
 			this.currentLasso = { page: pageNumber, points: getSelectionBoxPoints(point, point) };
 			this.dragAnchor = point;
 			this.dragMoved = false;
@@ -7867,6 +8539,9 @@ class NativePdfAnnotatorSession {
 	};
 
 	private readonly handlePointerMove = (event: PointerEvent): void => {
+		if (this.activePdfPointerId !== null && this.activePdfPointerId !== event.pointerId) {
+			return;
+		}
 		if (this.shouldHandleDocumentPointer(event)) {
 			return;
 		}
@@ -7911,9 +8586,7 @@ class NativePdfAnnotatorSession {
 				if (this.activeResizeHandle && this.selectedTargets.length > 0) {
 					this.resizeSelectedTargets(this.selectedTargets, this.activeResizeHandle, deltaX, deltaY);
 				} else {
-					for (const target of this.selectedTargets) {
-						this.moveSelectedTarget(target, deltaX, deltaY);
-					}
+					this.moveSelectedTargetsWithinPage(this.selectedTargets, deltaX, deltaY);
 				}
 				this.dragAnchor = point;
 				this.scheduleInteractionRedraw(pageNumber);
@@ -7981,6 +8654,9 @@ class NativePdfAnnotatorSession {
 	};
 
 	private readonly handlePointerUp = (event: PointerEvent): void => {
+		if (this.activePdfPointerId !== null && this.activePdfPointerId !== event.pointerId) {
+			return;
+		}
 		if (this.shouldHandleDocumentPointer(event)) {
 			return;
 		}
@@ -8239,6 +8915,9 @@ class NativePdfAnnotatorSession {
 	}
 
 	private readonly handlePointerCancel = (event: PointerEvent): void => {
+		if (this.activePdfPointerId !== null && this.activePdfPointerId !== event.pointerId) {
+			return;
+		}
 		if (this.shouldHandleDocumentPointer(event)) {
 			return;
 		}
@@ -8999,16 +9678,29 @@ class NativePdfAnnotatorSession {
 		context.fillStyle = textItem.color;
 		const fontSize = Math.max(10, this.resolveStoredFontScale(textItem) * surface.lastWidth);
 		const fontFamily = textItem.fontFamily ?? TEXT_FONT_FAMILIES[0];
-		context.font = `${fontSize}px "${fontFamily}", sans-serif`;
-		context.textBaseline = "top";
+		applyCanvasTextStyle(context, textItem, fontSize, fontFamily);
 		const boxWidth = textItem.boxWidthScale && textItem.boxWidthScale > 0
 			? textItem.boxWidthScale * surface.lastWidth
 			: surface.lastWidth * 0.48;
 		const innerWidth = Math.max(24, boxWidth - (INLINE_TEXT_BOX_PADDING_X * 2));
 		const textLeft = (textItem.x * surface.lastWidth) + INLINE_TEXT_BOX_PADDING_X;
-		const textTop = (textItem.y * surface.lastHeight) + INLINE_TEXT_BOX_PADDING_Y;
-		getWrappedCanvasTextLines(context, textItem.text, innerWidth).forEach((line, index) => {
-			context.fillText(line, textLeft, textTop + (index * fontSize * INLINE_TEXT_LINE_HEIGHT));
+		const lineSpacing = resolveTextLineSpacing(textItem);
+		const lines = getCanvasTextLines(context, textItem.text, innerWidth, resolveTextWordWrap(textItem));
+		const fallbackHeight = (INLINE_TEXT_BOX_PADDING_Y * 2) + getTextBlockHeight(fontSize, lines.length, lineSpacing) + 2;
+		const boxHeight = textItem.boxHeightScale && textItem.boxHeightScale > 0
+			? textItem.boxHeightScale * surface.lastHeight
+			: fallbackHeight;
+		const textTop = getTextBlockTop(
+			textItem.y * surface.lastHeight,
+			boxHeight,
+			fontSize,
+			lines.length,
+			resolveTextVerticalAlignment(textItem),
+			lineSpacing
+		);
+		const textX = getAlignedTextX(textLeft, innerWidth, resolveTextAlignment(textItem));
+		lines.forEach((line, index) => {
+			context.fillText(line, textX, textTop + (index * fontSize * lineSpacing));
 		});
 		context.restore();
 	}
@@ -9025,6 +9717,7 @@ class NativePdfAnnotatorSession {
 		const pageWidth = Math.max(surface?.lastWidth ?? 1, 1);
 		const pageHeight = Math.max(surface?.lastHeight ?? 1, 1);
 		const frameRect = this.inlineTextEditorFrameEl?.getBoundingClientRect() ?? null;
+		const framePoint = this.getInlineTextFramePoint(pageNumber) ?? this.inlineTextPoint;
 		const existing = this.inlineTextTargetId
 			? this.annotationDocument.textItems.find((entry) => entry.id === this.inlineTextTargetId)
 			: null;
@@ -9034,22 +9727,81 @@ class NativePdfAnnotatorSession {
 			id: existing?.id ?? "inline-text-preview",
 			page: pageNumber,
 			text: value,
-			x: this.inlineTextPoint.x,
-			y: this.inlineTextPoint.y,
+			x: framePoint.x,
+			y: framePoint.y,
 			color: this.inlineTextEditorEl.dataset.textColor || existing?.color || this.currentTextColor,
 			fontSize: this.currentTextFontSize,
 			fontFamily: this.currentTextFontFamily,
 			fontScale: this.getStableTextFontScale(this.currentTextFontSize),
+			fontWeight: this.currentTextFontWeight,
+			fontStyle: this.currentTextFontStyle,
+			textAlign: this.currentTextAlignment,
+			verticalAlign: this.currentTextVerticalAlignment,
+			lineSpacing: this.currentTextLineSpacing,
+			wordWrap: this.currentTextWordWrap,
+			autoFit: this.inlineTextAutoFit,
 			boxWidthScale,
 			boxHeightScale: baseBoxHeightScale,
 			zIndex: existing?.zIndex ?? this.getNextPageZIndex(pageNumber),
 			createdAt: existing?.createdAt ?? new Date().toISOString()
 		};
 		const measuredHeightScale = surface ? this.measureTextBoxHeightScale(surface, preview) : null;
-		if (measuredHeightScale) {
-			preview.boxHeightScale = Math.max(baseBoxHeightScale ?? 0, measuredHeightScale);
+		if (measuredHeightScale && this.inlineTextAutoFit) {
+			preview.boxHeightScale = measuredHeightScale;
 		}
 		return preview;
+	}
+
+	private measureAutoFitTextAnnotation(
+		surface: PageSurface,
+		textItem: TextAnnotation
+	): { width: number; height: number; lineCount: number } | null {
+		const context = surface.overlayEl.getContext("2d");
+		if (!context) {
+			return null;
+		}
+		const fontSize = getRenderedTextFontSize(this.resolveStoredFontScale(textItem), surface.lastWidth);
+		const fontFamily = textItem.fontFamily ?? TEXT_FONT_FAMILIES[0];
+		const left = textItem.x * surface.lastWidth;
+		const preferredWidth = textItem.autoFit === true
+			? Math.min(320, Math.max(220, surface.lastWidth * 0.44))
+			: textItem.boxWidthScale && textItem.boxWidthScale > 0
+				? textItem.boxWidthScale * surface.lastWidth
+				: Math.min(320, Math.max(220, surface.lastWidth * 0.44));
+		const maxWidth = Math.max(
+			44,
+			Math.min(
+				surface.lastWidth - left - 12,
+				resolveTextWordWrap(textItem) ? preferredWidth : surface.lastWidth * 0.78,
+				surface.lastWidth * 0.78,
+				560
+			)
+		);
+		context.save();
+		applyCanvasTextStyle(context, textItem, fontSize, fontFamily);
+		const size = measureAutoFitTextBox(
+			context,
+			textItem.text,
+			fontSize,
+			maxWidth,
+			resolveTextLineSpacing(textItem),
+			resolveTextWordWrap(textItem)
+		);
+		context.restore();
+		return size;
+	}
+
+	private updateAutoFitTextAnnotation(textItem: TextAnnotation, pageNumber: number): void {
+		if (textItem.autoFit !== true) {
+			return;
+		}
+		const surface = this.pageSurfaces.get(pageNumber);
+		const size = surface ? this.measureAutoFitTextAnnotation(surface, textItem) : null;
+		if (!surface || !size) {
+			return;
+		}
+		textItem.boxWidthScale = clamp(size.width / Math.max(surface.lastWidth, 1), 0.04, 0.9);
+		textItem.boxHeightScale = clamp(size.height / Math.max(surface.lastHeight, 1), 0.025, 0.9);
 	}
 
 	private measureTextBoxHeightScale(surface: PageSurface, textItem: TextAnnotation): number | null {
@@ -9063,21 +9815,99 @@ class NativePdfAnnotatorSession {
 			? textItem.boxWidthScale * surface.lastWidth
 			: surface.lastWidth * 0.48;
 		context.save();
-		context.font = `${fontSize}px "${fontFamily}", sans-serif`;
-		const lineCount = Math.max(1, getWrappedCanvasTextLines(context, textItem.text || " ", Math.max(24, boxWidth - (INLINE_TEXT_BOX_PADDING_X * 2))).length);
+		applyCanvasTextStyle(context, textItem, fontSize, fontFamily);
+		const lineCount = Math.max(
+			1,
+			getCanvasTextLines(
+				context,
+				textItem.text || " ",
+				Math.max(24, boxWidth - (INLINE_TEXT_BOX_PADDING_X * 2)),
+				resolveTextWordWrap(textItem)
+			).length
+		);
 		context.restore();
-		const measuredHeight = (INLINE_TEXT_BOX_PADDING_Y * 2) + (lineCount * fontSize * INLINE_TEXT_LINE_HEIGHT) + 2;
+		const measuredHeight = (INLINE_TEXT_BOX_PADDING_Y * 2) +
+			getTextBlockHeight(fontSize, lineCount, resolveTextLineSpacing(textItem)) +
+			2;
 		return clamp(measuredHeight / Math.max(surface.lastHeight, 1), 0.025, 0.9);
 	}
 
 	private updateInlineTextEditorBoxFromContent(pageNumber: number): void {
 		const preview = this.getInlineTextPreviewItem(pageNumber);
 		const surface = this.pageSurfaces.get(pageNumber);
-		if (!preview?.boxHeightScale || !surface || !this.inlineTextEditorFrameEl || !this.inlineTextEditorEl) {
+		if (!surface || !this.inlineTextEditorFrameEl || !this.inlineTextEditorEl) {
 			return;
 		}
-		this.inlineTextEditorFrameEl.setCssStyles({ height: `${preview.boxHeightScale * surface.lastHeight}px` });
-		this.inlineTextEditorEl.setCssStyles({ height: "100%" });
+		if (preview && this.inlineTextAutoFit) {
+			const size = this.measureAutoFitTextAnnotation(surface, preview);
+			if (size) {
+				this.inlineTextEditorFrameEl.setCssStyles({
+					width: `${size.width}px`,
+					height: `${size.height}px`
+				});
+				this.inlineTextEditorEl.setCssStyles({ height: "100%" });
+			}
+		} else if (preview?.boxHeightScale) {
+			const currentHeight = preview.boxHeightScale * surface.lastHeight;
+			const requiredHeightScale = this.measureTextBoxHeightScale(surface, preview);
+			const requiredHeight = requiredHeightScale
+				? requiredHeightScale * surface.lastHeight
+				: currentHeight;
+			const frameTop = Number(this.inlineTextEditorFrameEl.dataset.top) || 0;
+			const availableHeight = Math.max(36, surface.lastHeight - frameTop - 8);
+			const nextHeight = Math.min(Math.max(currentHeight, requiredHeight), availableHeight);
+			this.inlineTextEditorFrameEl.setCssStyles({ height: `${nextHeight}px` });
+			this.inlineTextEditorEl.setCssStyles({ height: "100%" });
+		}
+		this.updateInlineTextVerticalAlignment(pageNumber);
+	}
+
+	private updateInlineTextVerticalAlignment(pageNumber: number): void {
+		const surface = this.pageSurfaces.get(pageNumber);
+		const frame = this.inlineTextEditorFrameEl;
+		const editor = this.inlineTextEditorEl;
+		const mirror = this.inlineTextCaretMirrorEl;
+		if (!surface || !frame || !editor || !mirror) {
+			return;
+		}
+		const context = surface.overlayEl.getContext("2d");
+		if (!context) {
+			return;
+		}
+		const fontSize = Number.parseFloat(editor.style.fontSize) || 10;
+		const frameRect = frame.getBoundingClientRect();
+		const preview = this.getInlineTextPreviewItem(pageNumber);
+		const textStyle = preview ?? {
+			fontWeight: this.currentTextFontWeight,
+			fontStyle: this.currentTextFontStyle,
+			textAlign: this.currentTextAlignment
+		};
+		context.save();
+		applyCanvasTextStyle(context, textStyle, fontSize, this.currentTextFontFamily);
+		const lineCount = Math.max(
+			1,
+			getCanvasTextLines(
+				context,
+				editor.value || " ",
+				Math.max(24, frameRect.width - (INLINE_TEXT_BOX_PADDING_X * 2)),
+				this.currentTextWordWrap
+			).length
+		);
+		context.restore();
+		const lineBoxHeight = getTextBlockHeight(fontSize, lineCount, this.currentTextLineSpacing);
+		const textTop = getTextBlockTop(
+			0,
+			frameRect.height,
+			fontSize,
+			lineCount,
+			this.currentTextVerticalAlignment,
+			this.currentTextLineSpacing
+		);
+		const verticalPaddingBottom = Math.max(0, frameRect.height - textTop - lineBoxHeight);
+		const paddingTop = `${textTop}px`;
+		const paddingBottom = `${verticalPaddingBottom}px`;
+		editor.setCssStyles({ paddingTop, paddingBottom });
+		mirror.setCssStyles({ paddingTop, paddingBottom });
 	}
 
 	private drawShape(context: CanvasRenderingContext2D, surface: PageSurface, shape: ShapeAnnotation): void {
@@ -9124,14 +9954,15 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		context.save();
+		const powerpointTextSelection = visibleTargets.length === 1 && visibleTargets[0].kind === "text";
 		for (const target of visibleTargets) {
 			const bounds = this.getTargetBounds(target);
 			if (!bounds) {
 				continue;
 			}
-			context.strokeStyle = "#4da3ff";
-			context.lineWidth = 1.5;
-			context.setLineDash([6, 4]);
+			context.strokeStyle = powerpointTextSelection ? "#6b6b6b" : "#4da3ff";
+			context.lineWidth = powerpointTextSelection ? 1 : 1.5;
+			context.setLineDash(powerpointTextSelection ? [2, 2] : [6, 4]);
 			context.strokeRect(
 				bounds.left * surface.lastWidth,
 				bounds.top * surface.lastHeight,
@@ -9145,7 +9976,7 @@ class NativePdfAnnotatorSession {
 				for (const handle of this.getHandlePoints(bounds)) {
 					context.beginPath();
 					context.fillStyle = "#ffffff";
-					context.strokeStyle = "#4da3ff";
+					context.strokeStyle = powerpointTextSelection ? "#6b6b6b" : "#4da3ff";
 					context.setLineDash([]);
 					const radius = this.getResizeHandleVisualRadius(surface);
 					context.arc(handle.x * surface.lastWidth, handle.y * surface.lastHeight, radius, 0, Math.PI * 2);
@@ -9229,10 +10060,70 @@ class NativePdfAnnotatorSession {
 		context.restore();
 	}
 
-	private findSelectableTarget(pageNumber: number, point: AnnotationPoint, threshold = 0.03): SelectedTarget | null {
+	private getGeometryHitThreshold(pageNumber: number, pixelRadius = 9): number {
+		const surface = this.pageSurfaces.get(pageNumber);
+		const minDimension = Math.min(surface?.lastWidth ?? 0, surface?.lastHeight ?? 0);
+		return minDimension > 0 ? clamp(pixelRadius / minDimension, 0.005, 0.02) : 0.012;
+	}
+
+	private getTextContentLineBounds(
+		item: TextAnnotation,
+		pageNumber: number
+	): Array<{ left: number; right: number; top: number; bottom: number }> {
+		const surface = this.pageSurfaces.get(pageNumber);
+		const context = surface?.overlayEl.getContext("2d");
+		if (!surface || !context) {
+			return [getTextBounds(item)];
+		}
+		const fontSize = getRenderedTextFontSize(this.resolveStoredFontScale(item), surface.lastWidth);
+		const fontFamily = item.fontFamily ?? TEXT_FONT_FAMILIES[0];
+		const boxWidth = item.boxWidthScale && item.boxWidthScale > 0
+			? item.boxWidthScale * surface.lastWidth
+			: surface.lastWidth * 0.48;
+		const innerWidth = Math.max(24, boxWidth - (INLINE_TEXT_BOX_PADDING_X * 2));
+		const textLeft = (item.x * surface.lastWidth) + INLINE_TEXT_BOX_PADDING_X;
+		context.save();
+		applyCanvasTextStyle(context, item, fontSize, fontFamily);
+		const lines = getCanvasTextLines(context, item.text, innerWidth, resolveTextWordWrap(item));
+		const widths = lines.map((line) => context.measureText(line || " ").width);
+		context.restore();
+		const lineSpacing = resolveTextLineSpacing(item);
+		const fallbackHeight = (INLINE_TEXT_BOX_PADDING_Y * 2) +
+			getTextBlockHeight(fontSize, lines.length, lineSpacing) +
+			2;
+		const boxHeight = item.boxHeightScale && item.boxHeightScale > 0
+			? item.boxHeightScale * surface.lastHeight
+			: fallbackHeight;
+		const textTop = getTextBlockTop(
+			item.y * surface.lastHeight,
+			boxHeight,
+			fontSize,
+			lines.length,
+			resolveTextVerticalAlignment(item),
+			lineSpacing
+		);
+		const alignment = resolveTextAlignment(item);
+		return widths.map((lineWidth, index) => {
+			const left = alignment === "center"
+				? textLeft + ((innerWidth - lineWidth) / 2)
+				: alignment === "right"
+					? textLeft + innerWidth - lineWidth
+					: textLeft;
+			const top = textTop + (index * fontSize * lineSpacing);
+			return {
+				left: clamp(left / surface.lastWidth, 0, 1),
+				right: clamp((left + Math.max(lineWidth, 1)) / surface.lastWidth, 0, 1),
+				top: clamp(top / surface.lastHeight, 0, 1),
+				bottom: clamp((top + fontSize) / surface.lastHeight, 0, 1)
+			};
+		});
+	}
+
+	private findSelectableTarget(pageNumber: number, point: AnnotationPoint, threshold?: number): SelectedTarget | null {
 		if (!this.annotationDocument) {
 			return null;
 		}
+		const hitThreshold = threshold ?? this.getGeometryHitThreshold(pageNumber);
 		const candidates: HitCandidate[] = [];
 
 		for (let index = (this.annotationDocument.imageItems ?? []).length - 1; index >= 0; index -= 1) {
@@ -9241,7 +10132,7 @@ class NativePdfAnnotatorSession {
 				continue;
 			}
 			const bounds = this.getImageBounds(image);
-			if (pointInBounds(point, bounds, threshold)) {
+			if (pointInBounds(point, bounds, hitThreshold)) {
 				const score = pointInBounds(point, bounds)
 					? -0.04
 					: distanceToBounds(point, bounds);
@@ -9254,11 +10145,12 @@ class NativePdfAnnotatorSession {
 			if (item.page !== pageNumber) {
 				continue;
 			}
-			const textBounds = getTextBounds(item);
-			if (pointInBounds(point, textBounds, threshold)) {
-				const score = pointInBounds(point, textBounds)
+			const lineBounds = this.getTextContentLineBounds(item, pageNumber);
+			const hitBounds = lineBounds.filter((bounds) => pointInBounds(point, bounds, hitThreshold));
+			if (hitBounds.length > 0) {
+				const score = Math.min(...hitBounds.map((bounds) => pointInBounds(point, bounds)
 					? -0.03
-					: distanceToBounds(point, textBounds);
+					: distanceToBounds(point, bounds)));
 				candidates.push({ kind: "text", id: item.id, page: pageNumber, score });
 			}
 		}
@@ -9273,9 +10165,9 @@ class NativePdfAnnotatorSession {
 				candidates.push({ kind: "shape", id: shape.id, page: pageNumber, score: -0.02 });
 				continue;
 			}
-			if (pointInBounds(point, bounds, threshold)) {
+			if (pointInBounds(point, bounds, hitThreshold)) {
 				const score = distanceToShape(point, shape);
-				if (score <= threshold * 1.5 || pointInBounds(point, bounds)) {
+				if (score <= hitThreshold * 1.5 || pointInBounds(point, bounds)) {
 					candidates.push({ kind: "shape", id: shape.id, page: pageNumber, score });
 				}
 			}
@@ -9287,7 +10179,8 @@ class NativePdfAnnotatorSession {
 				continue;
 			}
 			const score = distanceToStroke(point, stroke);
-			if (score <= threshold) {
+			const visibleRadius = getNormalizedStrokePadding(stroke.width, stroke.widthScale);
+			if (score <= hitThreshold + visibleRadius) {
 				candidates.push({ kind: "stroke", id: stroke.id, page: pageNumber, score });
 			}
 		}
@@ -9348,6 +10241,26 @@ class NativePdfAnnotatorSession {
 			x: clamp(strokePoint.x + deltaX, 0, 1),
 			y: clamp(strokePoint.y + deltaY, 0, 1)
 		}));
+	}
+
+	private moveSelectedTargetsWithinPage(targets: SelectedTarget[], deltaX: number, deltaY: number): void {
+		const targetsByPage = new Map<number, SelectedTarget[]>();
+		for (const target of targets) {
+			const pageTargets = targetsByPage.get(target.page) ?? [];
+			pageTargets.push(target);
+			targetsByPage.set(target.page, pageTargets);
+		}
+		for (const pageTargets of targetsByPage.values()) {
+			const bounds = this.getCombinedBounds(pageTargets);
+			if (!bounds) {
+				continue;
+			}
+			const boundedDeltaX = clamp(deltaX, -bounds.left, 1 - bounds.right);
+			const boundedDeltaY = clamp(deltaY, -bounds.top, 1 - bounds.bottom);
+			for (const target of pageTargets) {
+				this.moveSelectedTarget(target, boundedDeltaX, boundedDeltaY);
+			}
+		}
 	}
 
 	private resizeSelectedTarget(target: SelectedTarget, handle: ResizeHandle, deltaX: number, deltaY: number): void {
@@ -9477,6 +10390,8 @@ class NativePdfAnnotatorSession {
 			const anchor = transformPoint({ x: item.x, y: item.y, pressure: 0.5 });
 			item.x = anchor.x;
 			item.y = anchor.y;
+			item.autoFit = false;
+			item.manualBoxSize = true;
 			item.boxWidthScale = clamp(currentWidth * widthScale, 0.04, 0.9);
 			item.boxHeightScale = clamp(currentHeight * heightScale, 0.026, 0.9);
 			return;
@@ -9598,30 +10513,39 @@ class NativePdfAnnotatorSession {
 			{ x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2, pressure: 0.5 }
 		];
 
+		const lassoHitsBounds = (
+			bounds: { left: number; right: number; top: number; bottom: number },
+			extraHit?: () => boolean
+		): boolean => {
+			return (
+				testPoints(bounds).some((point) => this.isPointInsidePolygon(point, lasso.points)) ||
+				lasso.points.some((point) => point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top && point.y <= bounds.bottom) ||
+				this.doesPolygonIntersectBounds(lasso.points, bounds) ||
+				(extraHit ? extraHit() : false)
+			);
+		};
 		const maybeAdd = (
 			target: SelectedTarget,
 			bounds: { left: number; right: number; top: number; bottom: number } | null,
 			extraHit?: () => boolean
-		) => {
+		): void => {
 			if (!bounds) {
 				return;
 			}
 			if (!boundsOverlap(bounds, polygonBounds)) {
 				return;
 			}
-			if (
-				testPoints(bounds).some((point) => this.isPointInsidePolygon(point, lasso.points)) ||
-				lasso.points.some((point) => point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top && point.y <= bounds.bottom) ||
-				this.doesPolygonIntersectBounds(lasso.points, bounds) ||
-				(extraHit ? extraHit() : false)
-			) {
+			if (lassoHitsBounds(bounds, extraHit)) {
 				hits.push(target);
 			}
 		};
 
 		for (const item of this.annotationDocument.textItems) {
 			if (item.page === lasso.page) {
-				maybeAdd({ kind: "text", id: item.id, page: item.page }, getTextBounds(item));
+				const lineBounds = this.getTextContentLineBounds(item, lasso.page);
+				if (lineBounds.some((bounds) => boundsOverlap(bounds, polygonBounds) && lassoHitsBounds(bounds))) {
+					hits.push({ kind: "text", id: item.id, page: item.page });
+				}
 			}
 		}
 		for (const image of this.annotationDocument.imageItems ?? []) {
@@ -9640,11 +10564,16 @@ class NativePdfAnnotatorSession {
 		}
 		for (const stroke of this.annotationDocument.strokes) {
 			if (stroke.page === lasso.page) {
-				maybeAdd(
-					{ kind: "stroke", id: stroke.id, page: stroke.page },
-					getStrokeBounds(stroke),
-					() => this.doesPolygonIntersectStroke(lasso.points, stroke)
-				);
+				const bounds = getStrokeBounds(stroke);
+				if (
+					boundsOverlap(bounds, polygonBounds) &&
+					(
+						stroke.points.some((point) => this.isPointInsidePolygon(point, lasso.points)) ||
+						this.doesPolygonIntersectStroke(lasso.points, stroke)
+					)
+				) {
+					hits.push({ kind: "stroke", id: stroke.id, page: stroke.page });
+				}
 			}
 		}
 
@@ -9796,7 +10725,7 @@ class NativePdfAnnotatorSession {
 		if (pageTargets.length === 0) {
 			return null;
 		}
-		const threshold = 0.03;
+		const threshold = this.getGeometryHitThreshold(pageNumber);
 		const candidates: HitCandidate[] = [];
 		for (const target of pageTargets) {
 			if (target.kind === "text") {
@@ -9804,9 +10733,13 @@ class NativePdfAnnotatorSession {
 				if (!item) {
 					continue;
 				}
-				const bounds = getTextBounds(item);
-				if (pointInBounds(point, bounds, threshold)) {
-					candidates.push({ ...target, score: pointInBounds(point, bounds) ? -0.03 : distanceToBounds(point, bounds) });
+				const lineBounds = this.getTextContentLineBounds(item, pageNumber);
+				const hitBounds = lineBounds.filter((bounds) => pointInBounds(point, bounds, threshold));
+				if (hitBounds.length > 0) {
+					candidates.push({
+						...target,
+						score: Math.min(...hitBounds.map((bounds) => pointInBounds(point, bounds) ? -0.03 : distanceToBounds(point, bounds)))
+					});
 				}
 				continue;
 			}
@@ -9833,7 +10766,8 @@ class NativePdfAnnotatorSession {
 				continue;
 			}
 			const score = distanceToStroke(point, stroke);
-			if (score <= threshold) {
+			const visibleRadius = getNormalizedStrokePadding(stroke.width, stroke.widthScale);
+			if (score <= threshold + visibleRadius) {
 				candidates.push({ ...target, score });
 			}
 		}

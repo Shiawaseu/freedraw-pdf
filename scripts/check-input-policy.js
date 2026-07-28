@@ -47,6 +47,10 @@ assertContains("main.ts", mainTs, "this.getInkInputPolicy() === \"pen-mouse-only
 assertContains("main.ts", mainTs, "shouldIgnoreInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())", "native PDF pointer handling must pass the policy");
 assertContains("main.ts", mainTs, "canvas.setCssStyles({ touchAction: \"none\" })", "accepted ink pointers must disable browser gesture handling while drawing");
 assertContains("main.ts", mainTs, "this.currentStroke && canvas && event.pointerType === \"touch\"", "touch pointer-up must preserve very short strokes");
+assertContains("main.ts", mainTs, "if (this.activePdfPointerId !== null && this.activePdfPointerId !== event.pointerId)", "secondary pointers must not interrupt an active PDF interaction");
+assertContains("main.ts", mainTs, "private moveSelectedTargetsWithinPage", "selection movement must use bounded whole-object translation");
+assertContains("main.ts", mainTs, "const boundedDeltaX = clamp(deltaX, -bounds.left, 1 - bounds.right);", "selection movement must stop at the horizontal page edge without collapsing points");
+assertContains("main.ts", mainTs, "const boundedDeltaY = clamp(deltaY, -bounds.top, 1 - bounds.bottom);", "selection movement must stop at the vertical page edge without collapsing points");
 assertContains("main.ts", mainTs, `.${"${SESSION_ROOT_CLASS}"}, ${"${TOOLBAR_SELECTORS}"}`, "native PDF toolbar clicks must never enter fallback handwriting");
 
 assertContains("package.json", JSON.stringify(packageJson.scripts), "check:input", "package scripts must expose this verifier");

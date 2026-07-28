@@ -10,6 +10,10 @@ export type InkInputPolicy = "pen-mouse-stylus-touch" | "pen-mouse-only" | "allo
 export type LivePreviewMode = "fast" | "quality";
 export type InkPressureMode = "simulate" | "stylus";
 export type InkEasingMode = "linear" | "ease-in" | "ease-out" | "ease-in-out";
+export type TextFontWeight = "normal" | "bold";
+export type TextFontStyle = "normal" | "italic";
+export type TextAlignment = "left" | "center" | "right";
+export type TextVerticalAlignment = "top" | "middle" | "bottom";
 
 export interface InkRenderSettings {
 	thinning: number;
@@ -107,6 +111,14 @@ export interface TextAnnotation {
 	fontSize: number;
 	fontFamily?: string;
 	fontScale?: number;
+	fontWeight?: TextFontWeight;
+	fontStyle?: TextFontStyle;
+	textAlign?: TextAlignment;
+	verticalAlign?: TextVerticalAlignment;
+	lineSpacing?: number;
+	wordWrap?: boolean;
+	autoFit?: boolean;
+	manualBoxSize?: boolean;
 	boxWidthScale?: number;
 	boxHeightScale?: number;
 	zIndex?: number;

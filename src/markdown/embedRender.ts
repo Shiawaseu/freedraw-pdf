@@ -2,7 +2,19 @@ import { drawSmoothInkStroke } from "../ink/inkEngine";
 import { getAnnotationRenderables } from "../annotation/renderOrder";
 import type { AnnotationDocument, ImageAnnotation, NormalizedRect, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
 import { TEXT_FONT_FAMILIES } from "../config";
-import { getWrappedCanvasTextLines } from "../text/textLayout";
+import {
+	INLINE_TEXT_BOX_PADDING_X,
+	INLINE_TEXT_BOX_PADDING_Y,
+	applyCanvasTextStyle,
+	getAlignedTextX,
+	getCanvasTextLines,
+	getTextBlockHeight,
+	getTextBlockTop,
+	resolveTextAlignment,
+	resolveTextLineSpacing,
+	resolveTextVerticalAlignment,
+	resolveTextWordWrap
+} from "../text/textLayout";
 import { clamp } from "../utils/general";
 
 export function normalizeRect(rect: NormalizedRect): NormalizedRect | null {
@@ -165,13 +177,31 @@ function renderEmbedText(context: CanvasRenderingContext2D, textItem: TextAnnota
 	context.fillStyle = textItem.color;
 	const fontSize = textItem.fontScale ? Math.max(10, textItem.fontScale * width) : textItem.fontSize;
 	const fontFamily = textItem.fontFamily ?? TEXT_FONT_FAMILIES[0];
-	context.font = `${fontSize}px "${fontFamily}", sans-serif`;
-	context.textBaseline = "top";
+	applyCanvasTextStyle(context, textItem, fontSize, fontFamily);
 	const boxWidth = textItem.boxWidthScale && textItem.boxWidthScale > 0
 		? textItem.boxWidthScale * width
 		: width * 0.48;
-	getWrappedCanvasTextLines(context, textItem.text, boxWidth).forEach((line, index) => {
-		context.fillText(line, textItem.x * width, (textItem.y * height) + (index * fontSize * 1.35));
+	const innerWidth = Math.max(24, boxWidth - (INLINE_TEXT_BOX_PADDING_X * 2));
+	const textLeft = (textItem.x * width) + INLINE_TEXT_BOX_PADDING_X;
+	const lineSpacing = resolveTextLineSpacing(textItem);
+	const lines = getCanvasTextLines(context, textItem.text, innerWidth, resolveTextWordWrap(textItem));
+	const fallbackHeight = (INLINE_TEXT_BOX_PADDING_Y * 2) +
+		getTextBlockHeight(fontSize, lines.length, lineSpacing) +
+		2;
+	const boxHeight = textItem.boxHeightScale && textItem.boxHeightScale > 0
+		? textItem.boxHeightScale * height
+		: fallbackHeight;
+	const textTop = getTextBlockTop(
+		textItem.y * height,
+		boxHeight,
+		fontSize,
+		lines.length,
+		resolveTextVerticalAlignment(textItem),
+		lineSpacing
+	);
+	const textX = getAlignedTextX(textLeft, innerWidth, resolveTextAlignment(textItem));
+	lines.forEach((line, index) => {
+		context.fillText(line, textX, textTop + (index * fontSize * lineSpacing));
 	});
 	context.restore();
 }

@@ -1,6 +1,6 @@
 {
   "name": "freedraw-pdf",
-  "version": "0.12.7",
+  "version": "0.12.8",
   "description": "Freehand PDF annotation plugin",
   "main": "main.js",
   "scripts": {
@@ -13,7 +13,8 @@
     "check:render": "node scripts/check-render-concurrency.js",
     "check:templates": "node scripts/check-template-consistency.js",
     "check:toolbar": "node scripts/check-toolbar-usability.js",
-    "check": "npm run check:mixed && npm run check:ink && npm run check:input && npm run check:eraser && npm run check:render && npm run check:templates && npm run check:toolbar",
+    "check:text": "node scripts/check-text-formatting.js",
+    "check": "npm run check:mixed && npm run check:ink && npm run check:input && npm run check:eraser && npm run check:render && npm run check:templates && npm run check:toolbar && npm run check:text",
     "package": "node esbuild.config.mjs production && npm run check && powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1",
     "deploy:test": "node esbuild.config.mjs production && npm run check && powershell -ExecutionPolicy Bypass -File scripts/deploy-test.ps1",
     "copy:test": "powershell -ExecutionPolicy Bypass -File scripts/deploy-test.ps1",

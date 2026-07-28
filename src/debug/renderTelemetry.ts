@@ -48,7 +48,7 @@ export class RenderTelemetryBroadcaster {
 	private inputEl: HTMLDivElement | null = null;
 	private renderEl: HTMLDivElement | null = null;
 	private detailEl: HTMLDivElement | null = null;
-	private hostWindow: Window | null = null;
+	private hostWindow: (Window & typeof globalThis) | null = null;
 	private publishHandle: number | null = null;
 
 	attach(host: HTMLElement): void {
