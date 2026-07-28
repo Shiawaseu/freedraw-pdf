@@ -120,11 +120,11 @@ export function cloneAnnotationsForPage(
 	};
 	getAnnotationRenderables(strokes, textItems, shapes).forEach((renderable, index) => {
 		if (renderable.kind === "stroke") {
-			payload.strokes.push(JSON.parse(JSON.stringify({ ...renderable.annotation, id: generateId("stroke"), page: pageNumber, zIndex: index })) as StrokeAnnotation);
+			payload.strokes.push(JSON.parse(JSON.stringify({ ...renderable.annotation, id: generateId("stroke"), page: pageNumber, zIndex: renderable.annotation.zIndex ?? index })) as StrokeAnnotation);
 		} else if (renderable.kind === "text") {
-			payload.textItems.push(JSON.parse(JSON.stringify({ ...renderable.annotation, id: generateId("text"), page: pageNumber, zIndex: index })) as TextAnnotation);
+			payload.textItems.push(JSON.parse(JSON.stringify({ ...renderable.annotation, id: generateId("text"), page: pageNumber, zIndex: renderable.annotation.zIndex ?? index })) as TextAnnotation);
 		} else {
-			payload.shapes.push(JSON.parse(JSON.stringify({ ...renderable.annotation, id: generateId("shape"), page: pageNumber, zIndex: index })) as ShapeAnnotation);
+			payload.shapes.push(JSON.parse(JSON.stringify({ ...renderable.annotation, id: generateId("shape"), page: pageNumber, zIndex: renderable.annotation.zIndex ?? index })) as ShapeAnnotation);
 		}
 	});
 	return payload;
@@ -166,65 +166,6 @@ export function distanceToStroke(point: AnnotationPoint, stroke: StrokeAnnotatio
 		nearest = Math.min(nearest, distanceToSegment(point, stroke.points[index - 1], stroke.points[index]));
 	}
 	return nearest;
-}
-
-export function splitStrokeByEraser(stroke: StrokeAnnotation, point: AnnotationPoint, threshold: number): StrokeAnnotation[] {
-	const keptSegments: AnnotationPoint[][] = [];
-	let currentSegment: AnnotationPoint[] = [];
-
-	for (const strokePoint of stroke.points) {
-		const shouldErase = distanceBetween(point, strokePoint) <= threshold;
-		if (shouldErase) {
-			if (currentSegment.length > 1) {
-				keptSegments.push(currentSegment);
-			}
-			currentSegment = [];
-			continue;
-		}
-		currentSegment.push(strokePoint);
-	}
-
-	if (currentSegment.length > 1) {
-		keptSegments.push(currentSegment);
-	}
-
-	return keptSegments.map((segment, index) => ({
-		...stroke,
-		id: index === 0 ? stroke.id : generateId("stroke"),
-		points: segment
-	}));
-}
-
-export function splitStrokeByEraserPath(
-	stroke: StrokeAnnotation,
-	start: AnnotationPoint,
-	end: AnnotationPoint,
-	threshold: number
-): StrokeAnnotation[] {
-	const keptSegments: AnnotationPoint[][] = [];
-	let currentSegment: AnnotationPoint[] = [];
-
-	for (const strokePoint of stroke.points) {
-		const shouldErase = distanceToSegment(strokePoint, start, end) <= threshold;
-		if (shouldErase) {
-			if (currentSegment.length > 1) {
-				keptSegments.push(currentSegment);
-			}
-			currentSegment = [];
-			continue;
-		}
-		currentSegment.push(strokePoint);
-	}
-
-	if (currentSegment.length > 1) {
-		keptSegments.push(currentSegment);
-	}
-
-	return keptSegments.map((segment, index) => ({
-		...stroke,
-		id: index === 0 ? stroke.id : generateId("stroke"),
-		points: segment
-	}));
 }
 
 export function polygonIntersectsBounds(

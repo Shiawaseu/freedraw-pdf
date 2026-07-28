@@ -1,5 +1,5 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
-import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
+import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
 type SettingDefinitionCompat = {
 	name: string;
@@ -12,13 +12,16 @@ export interface PDFAnnotatorSettingsHost {
 	shouldShowRegionToolbarButton(): boolean;
 	shouldShowCopyEmbedToolbarButton(): boolean;
 	shouldShowAnnotatedEmbedHeader(): boolean;
+	shouldShowDrawingNotices(): boolean;
+	shouldShowRenderTelemetry(): boolean;
 	getInkInputPolicy(): InkInputPolicy;
+	getLivePreviewMode(): LivePreviewMode;
 	getInkRenderSettings(): InkRenderSettings;
 	getAutosaveDelayMs(): number;
 	getToolDefaults(): ToolStateSnapshot;
 	getStoredPresets(): ToolPreset[];
 	updateBehaviorSettings(
-		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "showAnnotatedEmbedHeader" | "inkInputPolicy" | "inkRenderSettings" | "autosaveDelayMs">>
+		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs">>
 	): Promise<void>;
 	updateToolPreferences(snapshot: ToolStateSnapshot, presets: ToolPreset[]): void;
 }
@@ -95,20 +98,70 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
+				name: "Show drawing notices",
+				desc: "Show temporary notices for stroke recording and undo/redo actions.",
+				render: (setting) => {
+					setting
+						.setName("Show drawing notices")
+						.setDesc("Show temporary notices for stroke recording and undo/redo actions.")
+						.addToggle((toggle) => {
+							toggle
+								.setValue(this.plugin.shouldShowDrawingNotices())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ showDrawingNotices: value });
+								});
+						});
+				}
+			},
+			{
+				name: "Show rendering diagnostics",
+				desc: "Show the temporary input and rendering telemetry overlay. Off by default.",
+				render: (setting) => {
+					setting
+						.setName("Show rendering diagnostics")
+						.setDesc("Show the temporary input and rendering telemetry overlay. Off by default.")
+						.addToggle((toggle) => {
+							toggle
+								.setValue(this.plugin.shouldShowRenderTelemetry())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ showRenderTelemetry: value });
+								});
+						});
+				}
+			},
+			{
 				name: "Ink input mode",
-				desc: "Controls which pointer inputs can draw. Use touch fallback only if your stylus is reported as touch; otherwise fingers stay available for scrolling.",
+				desc: "Controls whether primary touch can draw. Touch drawing is recommended for iPad.",
 				render: (setting) => {
 					setting
 						.setName("Ink input mode")
-						.setDesc("Controls which pointer inputs can draw. Use touch fallback only if your stylus is reported as touch; otherwise fingers stay available for scrolling.")
+						.setDesc("Controls whether primary touch can draw. Touch drawing is recommended for iPad.")
 						.addDropdown((dropdown) => {
 							dropdown
-								.addOption("pen-mouse-stylus-touch", "Pen + mouse + stylus-like touch")
+								.addOption("pen-mouse-stylus-touch", "Pen + mouse + primary touch")
 								.addOption("pen-mouse-only", "Pen + mouse only")
 								.addOption("allow-touch", "Allow touch drawing")
 								.setValue(this.plugin.getInkInputPolicy())
 								.onChange(async (value) => {
 									await this.plugin.updateBehaviorSettings({ inkInputPolicy: value as InkInputPolicy });
+								});
+						});
+				}
+			},
+			{
+				name: "Live stroke preview",
+				desc: "Choose Fast for lower drawing latency, or High quality to render the final stroke style while writing.",
+				render: (setting) => {
+					setting
+						.setName("Live stroke preview")
+						.setDesc("Choose Fast for lower drawing latency, or High quality to render the final stroke style while writing.")
+						.addDropdown((dropdown) => {
+							dropdown
+								.addOption("fast", "Fast")
+								.addOption("quality", "High quality")
+								.setValue(this.plugin.getLivePreviewMode())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ livePreviewMode: value as LivePreviewMode });
 								});
 						});
 				}
@@ -362,11 +415,33 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
+			.setName("Show drawing notices")
+			.setDesc("Show temporary notices for stroke recording and undo/redo actions.")
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.shouldShowDrawingNotices())
+					.onChange(async (value) => {
+						await this.plugin.updateBehaviorSettings({ showDrawingNotices: value });
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Show rendering diagnostics")
+			.setDesc("Show the temporary input and rendering telemetry overlay. Off by default.")
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.shouldShowRenderTelemetry())
+					.onChange(async (value) => {
+						await this.plugin.updateBehaviorSettings({ showRenderTelemetry: value });
+					});
+			});
+
+		new Setting(containerEl)
 			.setName("Ink input mode")
-			.setDesc("Controls which pointer inputs can draw. Use touch fallback only if your stylus is reported as touch; otherwise fingers stay available for scrolling.")
+			.setDesc("Controls whether primary touch can draw. Touch drawing is recommended for iPad.")
 			.addDropdown((dropdown) => {
 				dropdown
-					.addOption("pen-mouse-stylus-touch", "Pen + mouse + stylus-like touch")
+					.addOption("pen-mouse-stylus-touch", "Pen + mouse + primary touch")
 					.addOption("pen-mouse-only", "Pen + mouse only")
 					.addOption("allow-touch", "Allow touch drawing")
 					.setValue(this.plugin.getInkInputPolicy())
@@ -379,6 +454,19 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			.setName("Ink rendering")
 			.setDesc("These values are passed to perfect-freehand. Higher streamline/smoothing values make strokes cleaner but can add visual lag or soften corners.")
 			.setHeading();
+
+		new Setting(containerEl)
+			.setName("Live stroke preview")
+			.setDesc("Choose Fast for lower drawing latency, or High quality to render the final stroke style while writing.")
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOption("fast", "Fast")
+					.addOption("quality", "High quality")
+					.setValue(this.plugin.getLivePreviewMode())
+					.onChange(async (value) => {
+						await this.plugin.updateBehaviorSettings({ livePreviewMode: value as LivePreviewMode });
+					});
+			});
 
 		const updateInkRenderSettings = async (patch: Partial<InkRenderSettings>): Promise<void> => {
 			await this.plugin.updateBehaviorSettings({

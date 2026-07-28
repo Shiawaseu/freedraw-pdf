@@ -22,6 +22,8 @@ export interface InkAppendOptions {
 	forceCommitFinalPoint?: boolean;
 }
 
+export type InkStrokeOutline = number[][];
+
 const INK_SMOOTHING_WINDOW_MS = 40;
 const INK_OUTPUT_RATE_HZ = 180;
 const INK_OUTPUT_INTERVAL_MS = 1000 / INK_OUTPUT_RATE_HZ;
@@ -404,7 +406,7 @@ export function getSvgPathFromStroke(outline: number[][], closed = true): string
 	return result;
 }
 
-export function getSmoothInkStrokePath(
+export function getSmoothInkStrokeOutline(
 	points: InkPoint[],
 	width: number,
 	height: number,
@@ -412,7 +414,7 @@ export function getSmoothInkStrokePath(
 	usePressure: boolean,
 	predictTail: boolean,
 	options: InkRenderOptions = {}
-): string | null {
+): InkStrokeOutline | null {
 	try {
 		const renderMode = options.renderMode ?? (predictTail ? "live" : "committed");
 		void renderMode;
@@ -451,12 +453,58 @@ export function getSmoothInkStrokePath(
 		if (outline.length < 3) {
 			return null;
 		}
-		const pathData = getSvgPathFromStroke(outline);
-		return pathData || null;
+		return outline;
 	} catch (error) {
-		console.warn("freedraw-pdf: perfect-freehand path failed, falling back to canvas stroke", error);
+		console.warn("freedraw-pdf: perfect-freehand outline failed, falling back to canvas stroke", error);
 		return null;
 	}
+}
+
+export function getSmoothInkStrokePath(
+	points: InkPoint[],
+	width: number,
+	height: number,
+	baseWidth: number,
+	usePressure: boolean,
+	predictTail: boolean,
+	options: InkRenderOptions = {}
+): string | null {
+	const outline = getSmoothInkStrokeOutline(points, width, height, baseWidth, usePressure, predictTail, options);
+	if (!outline) {
+		return null;
+	}
+	const pathData = getSvgPathFromStroke(outline);
+	return pathData || null;
+}
+
+export function fillInkStrokeOutline(context: CanvasRenderingContext2D, outline: InkStrokeOutline): boolean {
+	if (outline.length < 4) {
+		return false;
+	}
+	const first = outline[0];
+	const second = outline[1];
+	const third = outline[2];
+	context.beginPath();
+	context.moveTo(first[0], first[1]);
+	context.quadraticCurveTo(
+		second[0],
+		second[1],
+		average(second[0], third[0]),
+		average(second[1], third[1])
+	);
+	for (let index = 2; index < outline.length - 1; index += 1) {
+		const control = outline[index];
+		const next = outline[index + 1];
+		context.quadraticCurveTo(
+			control[0],
+			control[1],
+			average(control[0], next[0]),
+			average(control[1], next[1])
+		);
+	}
+	context.closePath();
+	context.fill();
+	return true;
 }
 
 function drawFreehandOutlineStroke(
@@ -468,13 +516,12 @@ function drawFreehandOutlineStroke(
 	usePressure: boolean,
 	predictTail: boolean,
 	options: InkRenderOptions = {}
-): boolean {
-	const pathData = getSmoothInkStrokePath(points, width, height, baseWidth, usePressure, predictTail, options);
-	if (!pathData) {
-		return false;
+): string | null {
+	const outline = getSmoothInkStrokeOutline(points, width, height, baseWidth, usePressure, predictTail, options);
+	if (!outline || !fillInkStrokeOutline(context, outline)) {
+		return null;
 	}
-	context.fill(new Path2D(pathData));
-	return true;
+	return getSvgPathFromStroke(outline) || null;
 }
 
 function drawUniformSmoothStroke(
@@ -523,16 +570,17 @@ export function drawSmoothInkStroke(
 	usePressure: boolean,
 	predictTail = false,
 	options: InkRenderOptions = {}
-): void {
+): string | null {
 	if (points.length === 0) {
-		return;
+		return null;
 	}
 	const renderMode = options.renderMode ?? (predictTail ? "live" : "committed");
-	if (drawFreehandOutlineStroke(context, points, width, height, baseWidth, usePressure, predictTail, { renderMode })) {
-		return;
+	const pathData = drawFreehandOutlineStroke(context, points, width, height, baseWidth, usePressure, predictTail, { renderMode });
+	if (pathData) {
+		return pathData;
 	}
 	if ((renderMode === "live" || predictTail || !usePressure) && drawUniformSmoothStroke(context, points, width, height, baseWidth, usePressure, predictTail, renderMode)) {
-		return;
+		return null;
 	}
 	const renderPoints = getRenderStrokePoints(points, predictTail);
 	const cumulativeDistances = getCumulativeStrokeDistances(renderPoints);
@@ -544,7 +592,7 @@ export function drawSmoothInkStroke(
 		context.moveTo(first.x * width, first.y * height);
 		context.lineTo((first.x + 0.0001) * width, (first.y + 0.0001) * height);
 		context.stroke();
-		return;
+		return null;
 	}
 	if (renderPoints.length === 2) {
 		const second = renderPoints[1];
@@ -554,7 +602,7 @@ export function drawSmoothInkStroke(
 		context.moveTo(first.x * width, first.y * height);
 		context.lineTo(second.x * width, second.y * height);
 		context.stroke();
-		return;
+		return null;
 	}
 
 	let previousAnchor = first;
@@ -586,4 +634,5 @@ export function drawSmoothInkStroke(
 	context.moveTo(previousAnchor.x * width, previousAnchor.y * height);
 	context.lineTo(last.x * width, last.y * height);
 	context.stroke();
+	return null;
 }

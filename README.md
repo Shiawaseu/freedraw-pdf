@@ -9,7 +9,7 @@ The plugin is designed for people who read, mark up, and study PDFs inside Obsid
 - Draw on PDF pages with pen and highlighter tools.
 - Add text boxes, shapes, and images to PDF pages or inserted blank/template pages.
 - Select, move, resize, duplicate, reorder, copy, cut, paste, and delete annotations.
-- Erase whole strokes or split strokes with the eraser path.
+- Erase contacted annotations without recalculating or fragmenting surviving strokes.
 - Insert temporary blank/template pages before, after, or at the end of PDF documents.
 - Choose inserted page templates, paper sizes, and paper colors.
 - Export PDF pages, inserted pages, and annotations as one flattened PDF.
@@ -64,7 +64,7 @@ Use the highlighter for translucent emphasis over PDF content. Highlighter width
 
 ### Eraser
 
-Use the eraser to remove annotation marks. Depending on the selected eraser behavior, it can remove annotation objects or split strokes along the eraser path.
+Use the eraser to remove annotation marks. Object mode removes complete contacted objects, while segment mode follows the eraser path without manufacturing or replaying fragmented survivor strokes.
 
 ### Select
 

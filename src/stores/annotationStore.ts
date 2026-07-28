@@ -1,8 +1,9 @@
 import { App, Notice, TFile } from "obsidian";
 import { ANNOTATION_FILE_SUFFIX } from "../config";
 import { getAnnotationRenderables } from "../annotation/renderOrder";
+import { migrateLegacyEraserPaths } from "../annotation/eraser";
 import { generateId } from "../utils/general";
-import type { AnnotationDocument, AnnotationLoadInfo, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
+import type { AnnotationDocument, AnnotationLoadInfo, EraserPathAnnotation, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
 
 const DEFAULT_STROKE_REFERENCE_WIDTH = 1524;
 const MAX_STROKE_WIDTH_SCALE = 0.08;
@@ -34,11 +35,12 @@ export function getPdfIdentity(file: TFile): AnnotationDocument["sourcePdf"] {
 
 export function createEmptyDocument(file: TFile): AnnotationDocument {
 	return {
-		version: 6,
+		version: 7,
 		sourceFile: file.path,
 		sourcePdf: getPdfIdentity(file),
 		updatedAt: new Date().toISOString(),
 		strokes: [],
+		eraserPaths: [],
 		textItems: [],
 		shapes: [],
 		imageItems: [],
@@ -52,9 +54,24 @@ export function cloneDocument(document: AnnotationDocument): AnnotationDocument 
 	return JSON.parse(JSON.stringify(document)) as AnnotationDocument;
 }
 
-export function normalizeAnnotationZIndexes(strokes: StrokeAnnotation[], textItems: TextAnnotation[], shapes: ShapeAnnotation[]): boolean {
+export function normalizeAnnotationZIndexes(
+	strokes: StrokeAnnotation[],
+	textItems: TextAnnotation[],
+	shapes: ShapeAnnotation[],
+	eraserPaths: EraserPathAnnotation[] = []
+): boolean {
 	let changed = false;
-	getAnnotationRenderables(strokes, textItems, shapes).forEach((renderable, index) => {
+	const renderables = [
+		...getAnnotationRenderables(strokes, textItems, shapes),
+		...eraserPaths.map((annotation, index) => ({
+			kind: "eraser" as const,
+			annotation,
+			fallbackOrder: 300000 + index
+		}))
+	].sort((left, right) =>
+		(left.annotation.zIndex ?? left.fallbackOrder) - (right.annotation.zIndex ?? right.fallbackOrder)
+	);
+	renderables.forEach((renderable, index) => {
 		if (renderable.annotation.zIndex !== index) {
 			renderable.annotation.zIndex = index;
 			changed = true;
@@ -67,14 +84,16 @@ export function normalizeDocumentZIndexes(document: AnnotationDocument): boolean
 	const pages = new Set<number>([
 		...document.strokes.map((stroke) => stroke.page),
 		...document.textItems.map((item) => item.page),
-		...document.shapes.map((shape) => shape.page)
+		...document.shapes.map((shape) => shape.page),
+		...(document.eraserPaths ?? []).map((eraserPath) => eraserPath.page)
 	]);
 	let changed = false;
 	for (const page of pages) {
 		const pageChanged = normalizeAnnotationZIndexes(
 			document.strokes.filter((stroke) => stroke.page === page),
 			document.textItems.filter((item) => item.page === page),
-			document.shapes.filter((shape) => shape.page === page)
+			document.shapes.filter((shape) => shape.page === page),
+			(document.eraserPaths ?? []).filter((eraserPath) => eraserPath.page === page)
 		);
 		changed = changed || pageChanged;
 	}
@@ -142,7 +161,7 @@ export class AnnotationStore {
 			const parsed = JSON.parse(raw) as Partial<AnnotationDocument>;
 			const sourcePdfPath = typeof parsed.sourcePdf?.path === "string" ? parsed.sourcePdf.path : parsed.sourceFile;
 			const document: AnnotationDocument = {
-				version: Math.max(6, parsed.version ?? 4),
+				version: Math.max(7, parsed.version ?? 4),
 				sourceFile: parsed.sourceFile ?? file.path,
 				sourcePdf: this.normalizeSourcePdf(parsed.sourcePdf, file),
 				updatedAt: parsed.updatedAt ?? new Date().toISOString(),
@@ -150,6 +169,15 @@ export class AnnotationStore {
 					? parsed.strokes.map((stroke) => ({
 							...stroke,
 							page: stroke.page ?? 1
+						}))
+					: [],
+				eraserPaths: Array.isArray(parsed.eraserPaths)
+					? parsed.eraserPaths
+						.filter((eraserPath) => Array.isArray(eraserPath.points) && eraserPath.points.length > 0)
+						.map((eraserPath) => ({
+							...eraserPath,
+							page: eraserPath.page ?? 1,
+							radiusScale: Math.max(0.0005, Number(eraserPath.radiusScale) || 0.004)
 						}))
 					: [],
 				textItems: Array.isArray(parsed.textItems)
@@ -205,13 +233,15 @@ export class AnnotationStore {
 						.sort((a, b) => a - b)
 					: []
 			};
+			const migratedLegacyErasers = migrateLegacyEraserPaths(document);
 			return {
 				document,
 				sidecarPath: path,
 				expectedSidecarPath,
 				recoveredFromDifferentPath: path !== expectedSidecarPath,
 				sourcePathMismatch: !!sourcePdfPath && sourcePdfPath !== file.path,
-				sourcePdfPath
+				sourcePdfPath,
+				migratedLegacyErasers
 			};
 		} catch (error) {
 			console.error("freedraw-pdf: failed to load sidecar", error);

@@ -7,6 +7,7 @@ export type EraserMode = "object" | "segment";
 export type SelectionMode = "single" | "box" | "lasso";
 export type ToolPresetKind = "pen" | "highlighter" | "eraser";
 export type InkInputPolicy = "pen-mouse-stylus-touch" | "pen-mouse-only" | "allow-touch";
+export type LivePreviewMode = "fast" | "quality";
 export type InkPressureMode = "simulate" | "stylus";
 export type InkEasingMode = "linear" | "ease-in" | "ease-out" | "ease-in-out";
 
@@ -59,7 +60,10 @@ export interface PDFAnnotatorSettings {
 	showRegionToolbarButton: boolean;
 	showCopyEmbedToolbarButton: boolean;
 	showAnnotatedEmbedHeader: boolean;
+	showDrawingNotices: boolean;
+	showRenderTelemetry: boolean;
 	inkInputPolicy: InkInputPolicy;
+	livePreviewMode: LivePreviewMode;
 	inkRenderSettings: InkRenderSettings;
 	autosaveDelayMs: number;
 }
@@ -80,6 +84,15 @@ export interface StrokeAnnotation {
 	widthScale?: number;
 	zIndex?: number;
 	points: AnnotationPoint[];
+	createdAt: string;
+}
+
+export interface EraserPathAnnotation {
+	id: string;
+	page: number;
+	points: AnnotationPoint[];
+	radiusScale: number;
+	zIndex?: number;
 	createdAt: string;
 }
 
@@ -230,6 +243,7 @@ export interface AnnotationDocument {
 	};
 	updatedAt: string;
 	strokes: StrokeAnnotation[];
+	eraserPaths?: EraserPathAnnotation[];
 	textItems: TextAnnotation[];
 	shapes: ShapeAnnotation[];
 	imageItems?: ImageAnnotation[];
@@ -245,6 +259,7 @@ export interface AnnotationLoadInfo {
 	recoveredFromDifferentPath: boolean;
 	sourcePathMismatch: boolean;
 	sourcePdfPath?: string;
+	migratedLegacyErasers?: boolean;
 }
 
 export interface PageSurface {
@@ -276,6 +291,7 @@ export interface HitCandidate extends SelectedTarget {
 
 export interface PageAnnotationBucket {
 	strokes: StrokeAnnotation[];
+	eraserPaths: EraserPathAnnotation[];
 	textItems: TextAnnotation[];
 	shapes: ShapeAnnotation[];
 	imageItems: ImageAnnotation[];

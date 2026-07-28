@@ -93,18 +93,27 @@ export function renderAnnotationDocumentPage(
 	width: number,
 	height: number
 ): void {
+	const annotationCanvas = createEl("canvas");
+	annotationCanvas.width = Math.max(1, Math.round(width));
+	annotationCanvas.height = Math.max(1, Math.round(height));
+	const annotationContext = annotationCanvas.getContext("2d");
+	if (!annotationContext) {
+		return;
+	}
 	const strokes = document.strokes.filter((stroke) => stroke.page === pageNumber);
 	const textItems = document.textItems.filter((item) => item.page === pageNumber);
 	const shapes = document.shapes.filter((shape) => shape.page === pageNumber);
-	for (const renderable of getAnnotationRenderables(strokes, textItems, shapes)) {
+	const renderables = getAnnotationRenderables(strokes, textItems, shapes);
+	for (const renderable of renderables) {
 		if (renderable.kind === "stroke") {
-			renderEmbedStroke(context, renderable.annotation, width, height);
+			renderEmbedStroke(annotationContext, renderable.annotation, width, height);
 		} else if (renderable.kind === "text") {
-			renderEmbedText(context, renderable.annotation, width, height);
-		} else {
-			renderEmbedShape(context, renderable.annotation, width, height);
+			renderEmbedText(annotationContext, renderable.annotation, width, height);
+		} else if (renderable.kind === "shape") {
+			renderEmbedShape(annotationContext, renderable.annotation, width, height);
 		}
 	}
+	context.drawImage(annotationCanvas, 0, 0);
 }
 
 export async function renderAnnotationDocumentPageImages(

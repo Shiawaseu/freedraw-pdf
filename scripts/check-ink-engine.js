@@ -39,6 +39,32 @@ function getCoordinatePairCount(pathData) {
 
 try {
 	const source = fs.readFileSync(path.join(projectRoot, "src", "ink", "inkEngine.ts"), "utf8");
+	const mainSource = fs.readFileSync(path.join(projectRoot, "main.ts"), "utf8");
+	assert(source.includes("simulatePressure: !effectiveUsePressure"), "perfect-freehand must preserve the release pressure behavior for simulated pressure mode");
+	assert(
+		mainSource.includes("this.drawTransientPageAnnotations(pageNumber, true);"),
+		"stroke commit must replace the retained live preview with canonical geometry"
+	);
+	assert(
+		mainSource.includes("this.drawStroke(context, surface, this.currentStroke, commitCurrentStroke ? false : predictTail, !commitCurrentStroke);"),
+		"committed stroke promotion must disable tail prediction"
+	);
+	assert(
+		mainSource.includes("const cachedOutline = this.getCachedStrokeOutline"),
+		"committed rendering must reuse cached numeric outlines"
+	);
+	assert(
+		mainSource.includes("new Map<string, { signature: string; outline: InkStrokeOutline }>()"),
+		"native rendering must cache immutable numeric outlines instead of browser-native paths"
+	);
+	assert(
+		mainSource.includes("fillInkStrokeOutline(context, cachedOutline);"),
+		"cached geometry must be traced directly onto the target canvas"
+	);
+	assert(
+		!source.includes("new Path2D(") && !mainSource.includes("new Path2D("),
+		"ink rendering must not depend on Electron Path2D SVG parsing"
+	);
 	const transpiled = ts.transpileModule(source, {
 		compilerOptions: {
 			module: ts.ModuleKind.CommonJS,
@@ -83,6 +109,19 @@ try {
 	assert(getCoordinatePairCount(livePath) >= 32, "live path is too sparse and likely angular");
 	assert(releasePreviewPath === committedPath, "live release-preview and committed paths diverged, causing release-time stroke snap");
 	assert(getCoordinatePairCount(livePath) >= getCoordinatePairCount(committedPath) * 0.8, "live path is much sparser than committed path and will visibly change on release");
+
+	const committedOutline = ink.getSmoothInkStrokeOutline(stroke.points, 1600, 2200, 8, true, false, { renderMode: "committed" });
+	const tracedCommands = [];
+	const traceContext = {
+		beginPath: () => tracedCommands.push("begin"),
+		moveTo: (...args) => tracedCommands.push(["move", ...args]),
+		quadraticCurveTo: (...args) => tracedCommands.push(["quadratic", ...args]),
+		closePath: () => tracedCommands.push("close"),
+		fill: () => tracedCommands.push("fill")
+	};
+	assert(committedOutline && ink.fillInkStrokeOutline(traceContext, committedOutline), "committed outline could not be traced directly");
+	assert(tracedCommands.filter((command) => Array.isArray(command) && command[0] === "quadratic").length === committedOutline.length - 2, "direct outline tracing dropped quadratic segments");
+	assert(tracedCommands.at(-1) === "fill", "direct outline tracing did not fill the closed stroke");
 
 	const start = performance.now();
 	for (let index = 0; index < 30; index += 1) {

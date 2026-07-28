@@ -22,13 +22,16 @@ export function shouldIgnoreInkPointerEvent(
 	if (inputMethod === "mouse") {
 		return event.button !== 0;
 	}
-	if (policy === "allow-touch") {
+	if (inputMethod === "touch") {
+		return policy === "pen-mouse-only" || event.isPrimary === false;
+	}
+	if (policy === "allow-touch" && inputMethod === "unknown") {
 		return event.isPrimary === false;
 	}
-	if (policy === "pen-mouse-only") {
+	if (policy === "pen-mouse-only" || inputMethod === "unknown" && !hasStylusLikePressure(event)) {
 		return true;
 	}
-	if ((inputMethod === "touch" || inputMethod === "unknown") && hasStylusLikePressure(event)) {
+	if (hasStylusLikePressure(event)) {
 		return false;
 	}
 	return true;
@@ -48,9 +51,16 @@ function hasStylusLikePressure(event: PointerEvent): boolean {
 }
 
 export function getCoalescedPointerEvents(event: PointerEvent): PointerEvent[] {
-	// Keep coalesced samples disabled for handwriting. Raw digitizer jitter from
-	// coalesced events can create self-intersecting freehand outlines with faithful
-	// low-streamline pen settings.
+	if (event.pointerType === "touch" && typeof event.getCoalescedEvents === "function") {
+		const samples = event.getCoalescedEvents();
+		if (samples.length > 0) {
+			const last = samples[samples.length - 1];
+			if (last.clientX !== event.clientX || last.clientY !== event.clientY || last.timeStamp !== event.timeStamp) {
+				return [...samples, event];
+			}
+			return samples;
+		}
+	}
 	return [event];
 }
 

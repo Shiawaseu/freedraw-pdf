@@ -90,7 +90,10 @@ export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
 	showRegionToolbarButton: false,
 	showCopyEmbedToolbarButton: false,
 	showAnnotatedEmbedHeader: false,
-	inkInputPolicy: "pen-mouse-stylus-touch",
+	showDrawingNotices: true,
+	showRenderTelemetry: false,
+	inkInputPolicy: "allow-touch",
+	livePreviewMode: "quality",
 	inkRenderSettings: {
 		thinning: 0.5,
 		streamline: 0.5,

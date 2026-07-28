@@ -1,12 +1,16 @@
 import { DEFAULT_SETTINGS, normalizeToolPresets } from "../config";
-import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
+import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
-type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "showAnnotatedEmbedHeader" | "inkInputPolicy" | "inkRenderSettings" | "autosaveDelayMs";
+type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs";
 
 function normalizeInkInputPolicy(value: unknown): InkInputPolicy {
 	return value === "pen-mouse-only" || value === "allow-touch" || value === "pen-mouse-stylus-touch"
 		? value
 		: DEFAULT_SETTINGS.inkInputPolicy;
+}
+
+function normalizeLivePreviewMode(value: unknown): LivePreviewMode {
+	return value === "quality" || value === "fast" ? value : DEFAULT_SETTINGS.livePreviewMode;
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -70,7 +74,10 @@ export class PDFAnnotatorSettingsController {
 			showRegionToolbarButton: typeof loaded?.showRegionToolbarButton === "boolean" ? loaded.showRegionToolbarButton : DEFAULT_SETTINGS.showRegionToolbarButton,
 			showCopyEmbedToolbarButton: typeof loaded?.showCopyEmbedToolbarButton === "boolean" ? loaded.showCopyEmbedToolbarButton : DEFAULT_SETTINGS.showCopyEmbedToolbarButton,
 			showAnnotatedEmbedHeader: typeof loaded?.showAnnotatedEmbedHeader === "boolean" ? loaded.showAnnotatedEmbedHeader : DEFAULT_SETTINGS.showAnnotatedEmbedHeader,
+			showDrawingNotices: typeof loaded?.showDrawingNotices === "boolean" ? loaded.showDrawingNotices : DEFAULT_SETTINGS.showDrawingNotices,
+			showRenderTelemetry: typeof loaded?.showRenderTelemetry === "boolean" ? loaded.showRenderTelemetry : DEFAULT_SETTINGS.showRenderTelemetry,
 			inkInputPolicy: normalizeInkInputPolicy(loaded?.inkInputPolicy),
+			livePreviewMode: normalizeLivePreviewMode(loaded?.livePreviewMode),
 			inkRenderSettings: normalizeInkRenderSettings(loaded?.inkRenderSettings),
 			autosaveDelayMs: typeof loaded?.autosaveDelayMs === "number" ? loaded.autosaveDelayMs : DEFAULT_SETTINGS.autosaveDelayMs
 		};
@@ -114,8 +121,20 @@ export class PDFAnnotatorSettingsController {
 		return this.settings.showAnnotatedEmbedHeader;
 	}
 
+	shouldShowDrawingNotices(): boolean {
+		return this.settings.showDrawingNotices;
+	}
+
+	shouldShowRenderTelemetry(): boolean {
+		return this.settings.showRenderTelemetry;
+	}
+
 	getInkInputPolicy(): InkInputPolicy {
 		return this.settings.inkInputPolicy;
+	}
+
+	getLivePreviewMode(): LivePreviewMode {
+		return this.settings.livePreviewMode;
 	}
 
 	getInkRenderSettings(): InkRenderSettings {
@@ -157,7 +176,10 @@ export class PDFAnnotatorSettingsController {
 			showRegionToolbarButton: DEFAULT_SETTINGS.showRegionToolbarButton,
 			showCopyEmbedToolbarButton: DEFAULT_SETTINGS.showCopyEmbedToolbarButton,
 			showAnnotatedEmbedHeader: DEFAULT_SETTINGS.showAnnotatedEmbedHeader,
+			showDrawingNotices: DEFAULT_SETTINGS.showDrawingNotices,
+			showRenderTelemetry: DEFAULT_SETTINGS.showRenderTelemetry,
 			inkInputPolicy: DEFAULT_SETTINGS.inkInputPolicy,
+			livePreviewMode: DEFAULT_SETTINGS.livePreviewMode,
 			inkRenderSettings: { ...DEFAULT_SETTINGS.inkRenderSettings },
 			autosaveDelayMs: DEFAULT_SETTINGS.autosaveDelayMs
 		};

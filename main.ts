@@ -1,10 +1,11 @@
 import { App, FileView, MarkdownView, Menu, Modal, Notice, Plugin, Setting, TAbstractFile, TFile, WorkspaceLeaf, setIcon } from "obsidian";
-import { appendStrokePoints, drawSmoothInkStroke, getSmoothInkStrokePath, setInkRenderSettings } from "./src/ink/inkEngine";
+import { appendStrokePoints, drawSmoothInkStroke, fillInkStrokeOutline, getSmoothInkStrokeOutline, setInkRenderSettings, type InkStrokeOutline } from "./src/ink/inkEngine";
 import { boundsOverlap, distanceBetween, distanceToSegment, getPolygonBounds, segmentsIntersect } from "./src/annotation/geometry";
 import { getAnnotationRenderables, getRenderableOrder, reorderRenderables } from "./src/annotation/renderOrder";
 import type { AnnotationReorderDirection } from "./src/annotation/renderOrder";
 import { getShapeBounds, getStrokeBounds, getTextBounds } from "./src/annotation/bounds";
-import { cloneAnnotationsForPage, distanceBetweenSegments, distanceToBounds, distanceToRectEdge, distanceToShape, distanceToStroke, getClipboardPasteOffset, getSelectionBoxPoints, normalizeRect, parseRegionReference, pointInBounds, segmentIntersectsExpandedBounds, splitStrokeByEraser, splitStrokeByEraserPath } from "./src/annotation/interaction";
+import { migrateLegacyEraserPaths } from "./src/annotation/eraser";
+import { cloneAnnotationsForPage, distanceBetweenSegments, distanceToBounds, distanceToRectEdge, distanceToShape, distanceToStroke, getClipboardPasteOffset, getSelectionBoxPoints, normalizeRect, parseRegionReference, pointInBounds, segmentIntersectsExpandedBounds } from "./src/annotation/interaction";
 import { PAPER_TEMPLATE_DOT_COLOR, PAPER_TEMPLATE_GRID_COLOR, PAPER_TEMPLATE_LINE_COLOR, getPaperTemplateMetrics } from "./src/notebook/paperTemplates";
 import {
 	MAX_HISTORY,
@@ -39,17 +40,22 @@ import {
 	resizeInlineTextEditor
 } from "./src/text/textLayout";
 import { PreviewStateController, ToolStateController, isShapeTool } from "./src/tools/toolState";
+import { runCooperativeRenderSlice } from "./src/render/cooperativeRender";
+import type { CooperativeRenderStep } from "./src/render/cooperativeRender";
+import { RenderTelemetryBroadcaster } from "./src/debug/renderTelemetry";
 import type {
 	AnnotationClipboardPayload,
 	AnnotationDocument,
 	AnnotationLoadInfo,
 	AnnotationPoint,
 	AnnotationTool,
+	EraserPathAnnotation,
 	EraserMode,
 	HitCandidate,
 	ImageAnnotation,
 	InkInputPolicy,
 	InkRenderSettings,
+	LivePreviewMode,
 	LassoSelection,
 	MixedPageEntry,
 	NormalizedRect,
@@ -119,6 +125,28 @@ interface NativeInsertPageLocation {
 	insertIndex: number;
 	anchor: number;
 	anchorLabel: string;
+}
+
+interface PageRenderSlotPool {
+	canvases: HTMLCanvasElement[];
+	nextIndex: number;
+}
+
+interface PageRenderJob {
+	pageNumber: number;
+	canvas: HTMLCanvasElement;
+	steps: CooperativeRenderStep[];
+	nextStep: number;
+	lastProgressAt: number;
+	width: number;
+	height: number;
+	version: number;
+	inputEpoch: number;
+}
+
+interface CanvasSnapshot {
+	image: ImageBitmap | HTMLImageElement;
+	dispose: () => void;
 }
 
 class BlankAnnotatablePdfModal extends Modal {
@@ -406,6 +434,7 @@ class NativePdfAnnotatorSession {
 	private scrollIdleHandle: number | null = null;
 	private redrawHandle: number | null = null;
 	private interactionRedrawHandle: number | null = null;
+	private committedRedrawHandle: number | null = null;
 	private popoverRepositionHandle: number | null = null;
 	private layoutRefreshHandles: number[] = [];
 	private zoomSettleHandle: number | null = null;
@@ -415,6 +444,7 @@ class NativePdfAnnotatorSession {
 	private activePdfPointerId: number | null = null;
 	private activePdfPointerCanvas: HTMLCanvasElement | null = null;
 	private currentStroke: StrokeAnnotation | null = null;
+	private currentStrokeRenderedPointCount = 0;
 	private currentShape: ShapeAnnotation | null = null;
 	private selectedTarget: SelectedTarget | null = null;
 	private selectedTargets: SelectedTarget[] = [];
@@ -425,6 +455,8 @@ class NativePdfAnnotatorSession {
 	private activeResizeHandle: ResizeHandle | null = null;
 	private erasingSession = false;
 	private lastEraserPoint: AnnotationPoint | null = null;
+	private eraserSessionPoints: AnnotationPoint[] = [];
+	private objectErasePreviewTargets = new Map<string, SelectedTarget>();
 	private scrollParent: HTMLElement | null = null;
 	private nativeEventBus: { on?: (name: string, callback: (data?: unknown) => void) => void; off?: (name: string, callback: (data?: unknown) => void) => void } | null = null;
 	private nativeEventHandlers: { name: string; callback: (data?: unknown) => void }[] = [];
@@ -440,10 +472,19 @@ class NativePdfAnnotatorSession {
 	private pageResizeObservers = new Map<number, ResizeObserver>();
 	private pendingRedrawPages = new Set<number>();
 	private pendingInteractionRedrawPages = new Set<number>();
-	private strokePathCache = new Map<string, { signature: string; path: Path2D }>();
+	private pendingCommittedRedrawPages = new Set<number>();
+	private strokePathCache = new Map<string, { signature: string; outline: InkStrokeOutline }>();
+	private pageRenderSlots = new Map<number, PageRenderSlotPool>();
+	private pageRenderJobs = new Map<number, PageRenderJob>();
+	private pageRenderVersions = new Map<number, number>();
+	private pageRenderPublications = new Map<number, number>();
+	private renderInputEpoch = 0;
+	private pageRenderTaskHandle: number | null = null;
+	private readonly renderTelemetry = new RenderTelemetryBroadcaster();
 	private imageElementCache = new Map<string, HTMLImageElement>();
 	private zoomingPages = new Set<number>();
 	private annotationPageCache: Map<number, PageAnnotationBucket> | null = null;
+	private nextPageZIndexCache = new Map<number, number>();
 	private realPdfPageCount = 0;
 	private syntheticPageContainer: HTMLElement | null = null;
 	private isSyncingSyntheticPages = false;
@@ -455,6 +496,7 @@ class NativePdfAnnotatorSession {
 	private focusedRegionHandle: number | null = null;
 	private lastPdfPoint: { clientX: number; clientY: number } | null = null;
 	private lastPdfPointTime: number = 0;
+	private lastInkInputTimestamp = 0;
 	private floatingToolbarOffset: { right: number; top: number } = { right: 12, top: 8 };
 	private floatingToolbarDrag: { startX: number; startY: number; startRight: number; startTop: number } | null = null;
 	private currentTextFontFamily = TEXT_FONT_FAMILIES[0];
@@ -494,6 +536,7 @@ class NativePdfAnnotatorSession {
 	refreshSettings(): void {
 		this.mountUi();
 		this.applyOverlayMode();
+		this.syncRenderTelemetry();
 		this.refreshToolbar();
 	}
 
@@ -551,11 +594,21 @@ class NativePdfAnnotatorSession {
 			if (fileChanged) {
 				const loadInfo = await this.store.loadWithInfo(nextFile);
 				this.annotationDocument = loadInfo.document;
+				this.nextPageZIndexCache.clear();
 				this.annotationLoadInfo = loadInfo;
 				this.isDirty = false;
 				const zIndexesChanged = normalizeDocumentZIndexes(this.annotationDocument);
 				const strokeScalesChanged = normalizeDocumentStrokeScales(this.annotationDocument);
-				if (zIndexesChanged || strokeScalesChanged) {
+				if (loadInfo.migratedLegacyErasers) {
+					this.isDirty = true;
+					try {
+						await this.store.save(nextFile, this.annotationDocument);
+						this.isDirty = false;
+					} catch (error) {
+						console.warn("freedraw-pdf: could not persist legacy eraser migration immediately", error);
+						this.scheduleSave();
+					}
+				} else if (zIndexesChanged || strokeScalesChanged) {
 					this.isDirty = true;
 					this.scheduleSave();
 				}
@@ -611,6 +664,7 @@ class NativePdfAnnotatorSession {
 		this.finishSessionInlineTextEditor(false);
 		this.file = null;
 		this.annotationDocument = null;
+		this.nextPageZIndexCache.clear();
 		this.annotationLoadInfo = null;
 		this.invalidateAnnotationPageCache();
 		this.currentStroke = null;
@@ -623,6 +677,8 @@ class NativePdfAnnotatorSession {
 		this.activeResizeHandle = null;
 		this.erasingSession = false;
 		this.lastEraserPoint = null;
+		this.eraserSessionPoints = [];
+		this.objectErasePreviewTargets.clear();
 		this.previewState.hide();
 		this.pointerPage = null;
 		this.visiblePageRange = null;
@@ -640,6 +696,7 @@ class NativePdfAnnotatorSession {
 		this.destroyObservers();
 		this.unbindNativePdfEvents();
 		this.destroyPageSurfaces();
+		this.renderTelemetry.dispose();
 		this.rootEl?.remove();
 		this.rootEl = null;
 		this.toolbarEl = null;
@@ -681,6 +738,7 @@ class NativePdfAnnotatorSession {
 		this.annotationMode = !this.annotationMode;
 		if (!this.annotationMode) {
 			this.finishSessionInlineTextEditor(true);
+			this.flushPendingCommittedPageRedraws();
 		}
 		if (this.annotationMode && this.currentTool === "select") {
 			this.setActiveTool("pen");
@@ -1052,6 +1110,7 @@ class NativePdfAnnotatorSession {
 		);
 		templatePage.insertAfterPdfPage = location.anchor;
 		sourceDocument.strokes = sourceDocument.strokes.map((stroke) => stroke.page >= insertedPageNumber ? { ...stroke, page: stroke.page + 1 } : stroke);
+		sourceDocument.eraserPaths = (sourceDocument.eraserPaths ?? []).map((eraserPath) => eraserPath.page >= insertedPageNumber ? { ...eraserPath, page: eraserPath.page + 1 } : eraserPath);
 		sourceDocument.textItems = sourceDocument.textItems.map((item) => item.page >= insertedPageNumber ? { ...item, page: item.page + 1 } : item);
 		sourceDocument.shapes = sourceDocument.shapes.map((shape) => shape.page >= insertedPageNumber ? { ...shape, page: shape.page + 1 } : shape);
 		sourceDocument.imageItems = (sourceDocument.imageItems ?? []).map((image) => image.page >= insertedPageNumber ? { ...image, page: image.page + 1 } : image);
@@ -1085,6 +1144,7 @@ class NativePdfAnnotatorSession {
 		const nextDocument = cloneDocument(document);
 		const mapPage = (pageNumber: number): number => result.pageMap.get(pageNumber) ?? pageNumber;
 		nextDocument.strokes = nextDocument.strokes.map((stroke) => ({ ...stroke, page: mapPage(stroke.page) }));
+		nextDocument.eraserPaths = (nextDocument.eraserPaths ?? []).map((eraserPath) => ({ ...eraserPath, page: mapPage(eraserPath.page) }));
 		nextDocument.textItems = nextDocument.textItems.map((item) => ({ ...item, page: mapPage(item.page) }));
 		nextDocument.shapes = nextDocument.shapes.map((shape) => ({ ...shape, page: mapPage(shape.page) }));
 		nextDocument.imageItems = (nextDocument.imageItems ?? []).map((image) => ({ ...image, page: mapPage(image.page) }));
@@ -1377,7 +1437,6 @@ class NativePdfAnnotatorSession {
 		const pastePoint = pasteInPlace ? null : this.getRecentPdfPastePoint(this.currentPage);
 		const pasteOffset = pasteInPlace ? { x: 0, y: 0 } : getClipboardPasteOffset(clipboard, pastePoint);
 		const nextSelections: SelectedTarget[] = [];
-		let nextZIndex = this.getNextPageZIndex(this.currentPage);
 		this.pushHistory();
 
 		for (const stroke of clipboard.strokes) {
@@ -1390,7 +1449,7 @@ class NativePdfAnnotatorSession {
 					x: clamp(point.x + pasteOffset.x, 0, 1),
 					y: clamp(point.y + pasteOffset.y, 0, 1)
 				})),
-				zIndex: nextZIndex++,
+				zIndex: this.getNextPageZIndex(this.currentPage),
 				createdAt: new Date().toISOString()
 			};
 			this.annotationDocument.strokes.push(nextStroke);
@@ -1404,7 +1463,7 @@ class NativePdfAnnotatorSession {
 				page: this.currentPage,
 				x: clamp(item.x + pasteOffset.x, 0, 1),
 				y: clamp(item.y + pasteOffset.y, 0, 1),
-				zIndex: nextZIndex++,
+				zIndex: this.getNextPageZIndex(this.currentPage),
 				createdAt: new Date().toISOString()
 			};
 			this.annotationDocument.textItems.push(nextItem);
@@ -1426,7 +1485,7 @@ class NativePdfAnnotatorSession {
 					x: clamp(shape.end.x + pasteOffset.x, 0, 1),
 					y: clamp(shape.end.y + pasteOffset.y, 0, 1)
 				},
-				zIndex: nextZIndex++,
+				zIndex: this.getNextPageZIndex(this.currentPage),
 				createdAt: new Date().toISOString()
 			};
 			this.annotationDocument.shapes.push(nextShape);
@@ -1440,7 +1499,7 @@ class NativePdfAnnotatorSession {
 				page: this.currentPage,
 				x: clamp(image.x + pasteOffset.x, 0, Math.max(0, 1 - image.widthScale)),
 				y: clamp(image.y + pasteOffset.y, 0, Math.max(0, 1 - image.heightScale)),
-				zIndex: nextZIndex++,
+				zIndex: this.getNextPageZIndex(this.currentPage),
 				createdAt: new Date().toISOString()
 			};
 			if (!Array.isArray(this.annotationDocument.imageItems)) {
@@ -1593,9 +1652,12 @@ class NativePdfAnnotatorSession {
 		this.dragMoved = false;
 		this.erasingSession = false;
 		this.lastEraserPoint = null;
+		this.eraserSessionPoints = [];
+		this.objectErasePreviewTargets.clear();
 		this.pointerPage = null;
 		if (previousEntry?.kind === "document") {
 			this.annotationDocument = previousEntry.document;
+			this.nextPageZIndexCache.clear();
 			this.invalidateAnnotationPageCache();
 			this.isDirty = true;
 			this.scheduleSave();
@@ -1676,13 +1738,22 @@ class NativePdfAnnotatorSession {
 	}
 
 	private getNextPageZIndex(pageNumber: number): number {
+		const cached = this.nextPageZIndexCache.get(pageNumber);
+		if (cached !== undefined) {
+			this.nextPageZIndexCache.set(pageNumber, cached + 1);
+			return cached;
+		}
 		const bucket = this.getPageAnnotationBucket(pageNumber);
 		const renderables = getAnnotationRenderables(bucket.strokes, bucket.textItems, bucket.shapes);
 		const imageOrders = bucket.imageItems.map((image) => image.zIndex ?? 0);
-		if (renderables.length === 0 && imageOrders.length === 0) {
+		const eraserOrders = bucket.eraserPaths.map((eraserPath) => eraserPath.zIndex ?? 0);
+		if (renderables.length === 0 && imageOrders.length === 0 && eraserOrders.length === 0) {
+			this.nextPageZIndexCache.set(pageNumber, 1);
 			return 0;
 		}
-		return Math.max(...renderables.map((renderable) => getRenderableOrder(renderable)), ...imageOrders) + 1;
+		const next = Math.max(...renderables.map((renderable) => getRenderableOrder(renderable)), ...imageOrders, ...eraserOrders) + 1;
+		this.nextPageZIndexCache.set(pageNumber, next + 1);
+		return next;
 	}
 
 	duplicateSelectedTargets(): void {
@@ -1694,13 +1765,7 @@ class NativePdfAnnotatorSession {
 		const offsetX = 0.018;
 		const offsetY = 0.018;
 		const nextSelections: SelectedTarget[] = [];
-		const nextZIndexByPage = new Map<number, number>();
 		this.pushHistory();
-		const takeNextZIndex = (pageNumber: number): number => {
-			const next = nextZIndexByPage.get(pageNumber) ?? this.getNextPageZIndex(pageNumber);
-			nextZIndexByPage.set(pageNumber, next + 1);
-			return next;
-		};
 
 		for (const target of this.selectedTargets) {
 			if (target.kind === "stroke") {
@@ -1716,7 +1781,7 @@ class NativePdfAnnotatorSession {
 						x: clamp(point.x + offsetX, 0, 1),
 						y: clamp(point.y + offsetY, 0, 1)
 					})),
-					zIndex: takeNextZIndex(stroke.page),
+					zIndex: this.getNextPageZIndex(stroke.page),
 					createdAt: new Date().toISOString()
 				};
 				this.annotationDocument.strokes.push(nextStroke);
@@ -1734,7 +1799,7 @@ class NativePdfAnnotatorSession {
 					id: generateId("text"),
 					x: clamp(item.x + offsetX, 0, 1),
 					y: clamp(item.y + offsetY, 0, 1),
-					zIndex: takeNextZIndex(item.page),
+					zIndex: this.getNextPageZIndex(item.page),
 					createdAt: new Date().toISOString()
 				};
 				this.annotationDocument.textItems.push(nextItem);
@@ -1759,7 +1824,7 @@ class NativePdfAnnotatorSession {
 					x: clamp(shape.end.x + offsetX, 0, 1),
 					y: clamp(shape.end.y + offsetY, 0, 1)
 				},
-				zIndex: takeNextZIndex(shape.page),
+				zIndex: this.getNextPageZIndex(shape.page),
 				createdAt: new Date().toISOString()
 			};
 			this.annotationDocument.shapes.push(nextShape);
@@ -1783,7 +1848,7 @@ class NativePdfAnnotatorSession {
 
 	undo(): void {
 		if (!this.annotationDocument || this.undoStack.length === 0) {
-			new Notice("Nothing to undo", 1200);
+			this.showDrawingNotice("Nothing to undo", 1200);
 			this.refreshStatus("Nothing to undo");
 			return;
 		}
@@ -1794,6 +1859,7 @@ class NativePdfAnnotatorSession {
 		if (entry.kind === "document") {
 			this.redoStack.push({ kind: "document", document: cloneDocument(this.annotationDocument) });
 			this.annotationDocument = entry.document;
+			this.nextPageZIndexCache.clear();
 		} else {
 			const strokeIndex = this.annotationDocument.strokes.findIndex((stroke) => stroke.id === entry.stroke.id);
 			if (strokeIndex >= 0) {
@@ -1808,13 +1874,13 @@ class NativePdfAnnotatorSession {
 		this.scheduleSyncPages();
 		this.drawAllAnnotations();
 		this.refreshToolbar();
-		new Notice(`Undo applied (${this.annotationDocument.strokes.length} strokes)`, 1600);
+		this.showDrawingNotice(`Undo applied (${this.annotationDocument.strokes.length} strokes)`, 1600);
 		this.refreshStatus("Undo applied");
 	}
 
 	redo(): void {
 		if (!this.annotationDocument || this.redoStack.length === 0) {
-			new Notice("Nothing to redo", 1200);
+			this.showDrawingNotice("Nothing to redo", 1200);
 			this.refreshStatus("Nothing to redo");
 			return;
 		}
@@ -1825,6 +1891,7 @@ class NativePdfAnnotatorSession {
 		if (entry.kind === "document") {
 			this.undoStack.push({ kind: "document", document: cloneDocument(this.annotationDocument) });
 			this.annotationDocument = entry.document;
+			this.nextPageZIndexCache.clear();
 		} else {
 			this.undoStack.push({ kind: "stroke-add", stroke: this.cloneStroke(entry.stroke) });
 			if (!this.annotationDocument.strokes.some((stroke) => stroke.id === entry.stroke.id)) {
@@ -1838,7 +1905,7 @@ class NativePdfAnnotatorSession {
 		this.scheduleSyncPages();
 		this.drawAllAnnotations();
 		this.refreshToolbar();
-		new Notice(`Redo applied (${this.annotationDocument.strokes.length} strokes)`, 1600);
+		this.showDrawingNotice(`Redo applied (${this.annotationDocument.strokes.length} strokes)`, 1600);
 		this.refreshStatus("Redo applied");
 	}
 
@@ -1962,6 +2029,7 @@ class NativePdfAnnotatorSession {
 		this.rootEl.appendChild(this.toolbarEl);
 		this.mountUi();
 		viewContentEl.appendChild(this.toolPreviewEl);
+		this.syncRenderTelemetry();
 		viewContentEl.addEventListener("pointerdown", this.handleViewPointerDown, { capture: true });
 		viewContentEl.addEventListener("pointermove", this.handleViewPointerMove, { passive: true });
 		viewContentEl.addEventListener("pointerleave", this.handleViewPointerLeave, { passive: true });
@@ -1999,6 +2067,15 @@ class NativePdfAnnotatorSession {
 				viewContentEl.appendChild(this.rootEl);
 			}
 		}
+	}
+
+	private syncRenderTelemetry(): void {
+		const viewContentEl = this.getViewContentEl();
+		if (viewContentEl && this.plugin.shouldShowRenderTelemetry()) {
+			this.renderTelemetry.attach(viewContentEl);
+			return;
+		}
+		this.renderTelemetry.dispose();
 	}
 
 	private applyFloatingToolbarPosition(): void {
@@ -2143,10 +2220,16 @@ class NativePdfAnnotatorSession {
 			window.cancelAnimationFrame(this.redrawHandle);
 			this.redrawHandle = null;
 		}
+		if (this.committedRedrawHandle !== null) {
+			window.clearTimeout(this.committedRedrawHandle);
+			this.committedRedrawHandle = null;
+		}
 		if (this.interactionRedrawHandle !== null) {
 			window.cancelAnimationFrame(this.interactionRedrawHandle);
 			this.interactionRedrawHandle = null;
 		}
+		this.cancelPageRenderJobs();
+		this.pageRenderSlots.clear();
 		if (this.popoverRepositionHandle !== null) {
 			window.cancelAnimationFrame(this.popoverRepositionHandle);
 			this.popoverRepositionHandle = null;
@@ -2170,6 +2253,7 @@ class NativePdfAnnotatorSession {
 		this.pageResizeObservers.clear();
 		this.pendingRedrawPages.clear();
 		this.pendingInteractionRedrawPages.clear();
+		this.pendingCommittedRedrawPages.clear();
 		this.zoomingPages.clear();
 		this.isPdfScrolling = false;
 		this.needsToolbarRefreshAfterScroll = false;
@@ -2536,6 +2620,8 @@ class NativePdfAnnotatorSession {
 		if (existing) {
 			this.pageResizeObservers.get(pageNumber)?.disconnect();
 			this.pageResizeObservers.delete(pageNumber);
+			this.cancelPageRenderJob(pageNumber);
+			this.pageRenderSlots.delete(pageNumber);
 			existing.overlayEl.remove();
 			existing.transientEl.remove();
 		}
@@ -2630,15 +2716,24 @@ class NativePdfAnnotatorSession {
 		}
 		const pages = Array.from(this.zoomingPages);
 		this.zoomingPages.clear();
+		let needsSurfaceSync = false;
 		for (const pageNumber of pages) {
 			const surface = this.pageSurfaces.get(pageNumber);
-			if (surface) {
-				this.resizeOverlay(surface);
-				surface.overlayEl.setCssStyles({ opacity: "1" });
+			if (
+				!surface ||
+				!surface.hostEl.isConnected ||
+				surface.overlayEl.parentElement !== surface.hostEl ||
+				surface.transientEl.parentElement !== surface.hostEl
+			) {
+				needsSurfaceSync = true;
+				continue;
 			}
+			this.ensureOverlayLayerOrder(surface);
+			this.resizeOverlay(surface);
+			surface.overlayEl.setCssStyles({ opacity: "1" });
 			this.schedulePageRedraw(pageNumber);
 		}
-		if (this.annotationDocument?.appendedPages?.length) {
+		if (needsSurfaceSync || this.annotationDocument?.appendedPages?.length) {
 			this.scheduleSyncPages();
 		}
 	}
@@ -2702,7 +2797,8 @@ class NativePdfAnnotatorSession {
 		if (!backgroundEl) {
 			backgroundEl = createDiv();
 			backgroundEl.className = "pdf-native-annotator-template-background pdf-native-annotator-synthetic-background";
-			surface.hostEl.insertBefore(backgroundEl, surface.overlayEl);
+			surface.hostEl.appendChild(backgroundEl);
+			this.ensureOverlayLayerOrder(surface);
 		}
 		backgroundEl.dataset.template = pageTemplate.template;
 		const templatePage: NotebookPage = {
@@ -2810,6 +2906,10 @@ class NativePdfAnnotatorSession {
 		this.clearLayoutRefreshHandles();
 		const handle = window.setTimeout(() => {
 			this.layoutRefreshHandles = this.layoutRefreshHandles.filter((pendingHandle) => pendingHandle !== handle);
+			if (this.hasActiveTransientRender()) {
+				this.scheduleLayoutRefresh();
+				return;
+			}
 			this.syncPages(false);
 			this.forceRedrawVisibleAnnotations();
 		}, 220);
@@ -2827,7 +2927,7 @@ class NativePdfAnnotatorSession {
 		for (const [pageNumber, surface] of this.pageSurfaces.entries()) {
 			surface.overlayEl.setCssStyles({ visibility: "visible" });
 			this.ensureOverlayLayerOrder(surface);
-			this.drawPageAnnotations(pageNumber);
+			this.startPageRenderJob(pageNumber);
 		}
 	}
 
@@ -2851,7 +2951,7 @@ class NativePdfAnnotatorSession {
 			this.zoomingPages.delete(pageNumber);
 			surface.overlayEl.setCssStyles({ visibility: "visible" });
 			this.ensureOverlayLayerOrder(surface);
-			this.drawPageAnnotations(pageNumber);
+			this.startPageRenderJob(pageNumber);
 		}
 		if (!redrewAnyPage) {
 			this.syncPages();
@@ -2867,6 +2967,9 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		this.pendingRedrawPages.add(pageNumber);
+		if (this.hasActiveTransientRender()) {
+			return;
+		}
 		if (this.isPdfScrolling && !this.currentStroke && !this.currentShape && !this.currentLasso) {
 			return;
 		}
@@ -2875,6 +2978,9 @@ class NativePdfAnnotatorSession {
 		}
 		this.redrawHandle = window.requestAnimationFrame(() => {
 			this.redrawHandle = null;
+			if (this.hasActiveTransientRender()) {
+				return;
+			}
 			const pendingPages = Array.from(this.pendingRedrawPages);
 			this.pendingRedrawPages.clear();
 			for (const pendingPage of pendingPages) {
@@ -2883,27 +2989,336 @@ class NativePdfAnnotatorSession {
 					pendingPage === this.pointerPage ||
 					this.shouldKeepPageHot(pendingPage);
 				if (shouldDraw) {
-					this.drawPageAnnotations(pendingPage);
+					this.startPageRenderJob(pendingPage);
 				}
 			}
 		});
+	}
+
+	private getNextPageRenderSlot(surface: PageSurface): HTMLCanvasElement {
+		let pool = this.pageRenderSlots.get(surface.pageNumber);
+		if (!pool) {
+			pool = {
+				canvases: [createEl("canvas"), createEl("canvas"), createEl("canvas")],
+				nextIndex: 0
+			};
+			this.pageRenderSlots.set(surface.pageNumber, pool);
+		}
+		const canvas = pool.canvases[pool.nextIndex];
+		pool.nextIndex = (pool.nextIndex + 1) % pool.canvases.length;
+		const ratio = window.devicePixelRatio || 1;
+		const pixelWidth = Math.max(1, Math.floor(surface.lastWidth * ratio));
+		const pixelHeight = Math.max(1, Math.floor(surface.lastHeight * ratio));
+		if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+			canvas.width = pixelWidth;
+			canvas.height = pixelHeight;
+		}
+		return canvas;
+	}
+
+	private startPageRenderJob(pageNumber: number): void {
+		if (this.hasActiveTransientRender() || !this.annotationDocument) {
+			return;
+		}
+		const surface = this.pageSurfaces.get(pageNumber);
+		if (!surface || !surface.overlayEl.isConnected || !surface.hostEl.isConnected) {
+			return;
+		}
+		this.ensureOverlayLayerOrder(surface);
+		this.resizeOverlay(surface);
+		const canvas = this.getNextPageRenderSlot(surface);
+		const context = canvas.getContext("2d", { willReadFrequently: true });
+		if (!context) {
+			return;
+		}
+		const ratio = window.devicePixelRatio || 1;
+		context.setTransform(1, 0, 0, 1, 0, 0);
+		context.clearRect(0, 0, canvas.width, canvas.height);
+		context.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+		const bucket = this.getPageAnnotationBucket(pageNumber);
+		const steps: CooperativeRenderStep[] = [];
+		for (const imageItem of bucket.imageItems) {
+			steps.push({
+				run: () => this.drawImageAnnotation(context, surface, imageItem),
+				expensive: true
+			});
+		}
+		const renderables = getAnnotationRenderables(bucket.strokes, bucket.textItems, bucket.shapes);
+		for (const renderable of renderables) {
+			if (renderable.kind === "stroke") {
+				steps.push({
+					run: () => this.drawStroke(context, surface, renderable.annotation),
+					expensive: true
+				});
+			} else if (renderable.kind === "text") {
+				if (this.inlineTextTargetId !== renderable.annotation.id || this.inlineTextPageNumber !== pageNumber) {
+					steps.push({
+						run: () => this.drawText(context, surface, renderable.annotation),
+						expensive: false
+					});
+				}
+			} else if (renderable.kind === "shape") {
+				steps.push({
+					run: () => this.drawShape(context, surface, renderable.annotation),
+					expensive: false
+				});
+			}
+		}
+		const inlinePreviewText = this.getInlineTextPreviewItem(pageNumber);
+		if (inlinePreviewText) {
+			steps.push({
+				run: () => this.drawText(context, surface, inlinePreviewText),
+				expensive: false
+			});
+		}
+		const pageSelections = this.selectedTargets.filter((target) => target.page === pageNumber);
+		if (pageSelections.length > 0) {
+			steps.push({
+				run: () => this.drawSelection(context, surface, pageSelections),
+				expensive: false
+			});
+		}
+		if (this.lastSelectionRegion?.page === pageNumber) {
+			const rect = this.lastSelectionRegion.rect;
+			steps.push({
+				run: () => this.drawFocusedRegion(context, surface, rect),
+				expensive: false
+			});
+		}
+		if (this.focusedRegion && this.focusedRegionPage === pageNumber) {
+			const rect = this.focusedRegion;
+			steps.push({
+				run: () => this.drawFocusedRegion(context, surface, rect),
+				expensive: false
+			});
+		}
+		const version = (this.pageRenderVersions.get(pageNumber) ?? 0) + 1;
+		this.pageRenderVersions.set(pageNumber, version);
+		this.pageRenderJobs.set(pageNumber, {
+			pageNumber,
+			canvas,
+			steps,
+			nextStep: 0,
+			lastProgressAt: performance.now(),
+			width: surface.lastWidth,
+			height: surface.lastHeight,
+			version,
+			inputEpoch: this.renderInputEpoch
+		});
+		this.renderTelemetry.recordRenderQueued(pageNumber, steps.length, this.pageRenderJobs.size);
+		this.schedulePageRenderJobs();
+	}
+
+	private schedulePageRenderJobs(): void {
+		if (this.pageRenderTaskHandle !== null || this.pageRenderJobs.size === 0) {
+			return;
+		}
+		this.pageRenderTaskHandle = window.setTimeout(() => {
+			this.pageRenderTaskHandle = null;
+			if (this.hasActiveTransientRender()) {
+				this.cancelPageRenderJobs();
+				return;
+			}
+			const firstJob = this.pageRenderJobs.entries().next().value as [number, PageRenderJob] | undefined;
+			if (!firstJob) {
+				this.renderTelemetry.recordRenderIdle("no active render jobs");
+				return;
+			}
+			const [pageNumber, job] = firstJob;
+			const surface = this.pageSurfaces.get(pageNumber);
+			if (!surface || surface.lastWidth !== job.width || surface.lastHeight !== job.height) {
+				this.pageRenderJobs.delete(pageNumber);
+				if (this.pageRenderJobs.size === 0) {
+					this.renderTelemetry.recordRenderIdle("render invalidated by layout");
+				}
+				this.schedulePageRenderJobs();
+				return;
+			}
+			const sliceStart = performance.now();
+			const allowInputYield = sliceStart - job.lastProgressAt < 48;
+			const previousStep = job.nextStep;
+			const result = runCooperativeRenderSlice(job.steps, job.nextStep, {
+				budgetMs: 4,
+				now: () => performance.now(),
+				isInputPending: () => allowInputYield && this.isBrowserInputPending()
+			});
+			job.nextStep = result.nextStep;
+			if (job.nextStep > previousStep) {
+				job.lastProgressAt = performance.now();
+			}
+			this.renderTelemetry.recordRenderProgress(
+				pageNumber,
+				job.nextStep,
+				job.steps.length,
+				this.pageRenderJobs.size,
+				performance.now() - sliceStart,
+				result.inputPending
+			);
+			const canSwap = !allowInputYield || (!result.inputPending && !this.isBrowserInputPending());
+			if (job.nextStep >= job.steps.length && canSwap) {
+				this.pageRenderJobs.delete(pageNumber);
+				if (!this.hasActiveTransientRender()) {
+					this.pageRenderPublications.set(pageNumber, job.version);
+					this.renderTelemetry.recordRenderPublishing(pageNumber, this.pageRenderJobs.size + this.pageRenderPublications.size);
+					void this.publishPageRenderSnapshot(job, surface);
+				}
+			}
+			this.schedulePageRenderJobs();
+		}, 0);
+	}
+
+	private isBrowserInputPending(): boolean {
+		const scheduling = (navigator as Navigator & {
+			scheduling?: {
+				isInputPending?: () => boolean;
+			};
+		}).scheduling;
+		return scheduling?.isInputPending?.() ?? false;
+	}
+
+	private cancelPageRenderJob(pageNumber: number): void {
+		const cancelled = this.pageRenderJobs.delete(pageNumber);
+		const publishing = this.pageRenderPublications.delete(pageNumber);
+		this.pageRenderVersions.set(pageNumber, (this.pageRenderVersions.get(pageNumber) ?? 0) + 1);
+		if (this.pageRenderJobs.size === 0 && this.pageRenderTaskHandle !== null) {
+			window.clearTimeout(this.pageRenderTaskHandle);
+			this.pageRenderTaskHandle = null;
+		}
+		if ((cancelled || publishing) && this.pageRenderJobs.size === 0 && this.pageRenderPublications.size === 0) {
+			this.renderTelemetry.recordRenderCancelled("page render invalidated");
+		}
+	}
+
+	private async publishPageRenderSnapshot(job: PageRenderJob, surface: PageSurface): Promise<void> {
+		let snapshot: CanvasSnapshot | null = null;
+		try {
+			snapshot = await this.createCanvasSnapshot(job.canvas);
+			const currentSurface = this.pageSurfaces.get(job.pageNumber);
+			const isCurrent =
+				currentSurface === surface &&
+				surface.overlayEl.isConnected &&
+				surface.lastWidth === job.width &&
+				surface.lastHeight === job.height &&
+				this.pageRenderVersions.get(job.pageNumber) === job.version &&
+				this.pageRenderPublications.get(job.pageNumber) === job.version &&
+				this.renderInputEpoch === job.inputEpoch &&
+				!this.hasActiveTransientRender();
+			if (!isCurrent) {
+				return;
+			}
+			const targetContext = surface.overlayEl.getContext("2d");
+			if (!targetContext) {
+				return;
+			}
+			targetContext.save();
+			targetContext.setTransform(1, 0, 0, 1, 0, 0);
+			targetContext.clearRect(0, 0, surface.overlayEl.width, surface.overlayEl.height);
+			targetContext.drawImage(snapshot.image, 0, 0, surface.overlayEl.width, surface.overlayEl.height);
+			targetContext.restore();
+			this.renderTelemetry.recordRenderComplete(job.pageNumber);
+		} catch (error) {
+			console.warn("freedraw-pdf: asynchronous canvas publication failed", error);
+			this.renderTelemetry.recordRenderCancelled("snapshot publication failed");
+		} finally {
+			snapshot?.dispose();
+			if (this.pageRenderPublications.get(job.pageNumber) === job.version) {
+				this.pageRenderPublications.delete(job.pageNumber);
+			}
+			if (this.pageRenderJobs.size === 0 && this.pageRenderPublications.size === 0) {
+				this.renderTelemetry.recordRenderIdle("render queue empty");
+			}
+		}
+	}
+
+	private async createCanvasSnapshot(source: HTMLCanvasElement): Promise<CanvasSnapshot> {
+		const ownerWindow = source.ownerDocument.defaultView;
+		if (ownerWindow && typeof ownerWindow.createImageBitmap === "function") {
+			const bitmap = await ownerWindow.createImageBitmap(source);
+			return {
+				image: bitmap,
+				dispose: () => bitmap.close()
+			};
+		}
+
+		const blob = await new Promise<Blob>((resolve, reject) => {
+			source.toBlob((result) => {
+				if (result) {
+					resolve(result);
+				} else {
+					reject(new Error("Canvas snapshot returned no image data"));
+				}
+			}, "image/png");
+		});
+		const image = source.ownerDocument.createElement("img");
+		const urlApi = ownerWindow?.URL ?? URL;
+		const objectUrl = urlApi.createObjectURL(blob);
+		image.src = objectUrl;
+		if (typeof image.decode === "function") {
+			await image.decode();
+		} else {
+			await new Promise<void>((resolve, reject) => {
+				image.addEventListener("load", () => resolve(), { once: true });
+				image.addEventListener("error", () => reject(new Error("Canvas snapshot image failed to load")), { once: true });
+			});
+		}
+		return {
+			image,
+			dispose: () => urlApi.revokeObjectURL(objectUrl)
+		};
+	}
+
+	private publishRenderedCanvas(source: HTMLCanvasElement, target: HTMLCanvasElement): void {
+		const sourceContext = source.getContext("2d", { willReadFrequently: true });
+		const targetContext = target.getContext("2d");
+		if (!sourceContext || !targetContext) {
+			return;
+		}
+		try {
+			const frame = sourceContext.getImageData(0, 0, source.width, source.height);
+			targetContext.putImageData(frame, 0, 0);
+		} catch (error) {
+			console.warn("freedraw-pdf: pixel-frame publish failed; falling back to canvas copy", error);
+			targetContext.save();
+			targetContext.setTransform(1, 0, 0, 1, 0, 0);
+			targetContext.clearRect(0, 0, target.width, target.height);
+			targetContext.drawImage(source, 0, 0);
+			targetContext.restore();
+		}
+	}
+
+	private cancelPageRenderJobs(reason = "cancelled"): void {
+		const hadJobs = this.pageRenderJobs.size > 0 || this.pageRenderPublications.size > 0;
+		this.renderInputEpoch += 1;
+		if (this.pageRenderTaskHandle !== null) {
+			window.clearTimeout(this.pageRenderTaskHandle);
+			this.pageRenderTaskHandle = null;
+		}
+		this.pageRenderJobs.clear();
+		this.pageRenderPublications.clear();
+		if (hadJobs) {
+			this.renderTelemetry.recordRenderCancelled(reason);
+		}
 	}
 
 	private flushDeferredScrollRedraws(): void {
 		if (this.redrawHandle !== null) {
 			return;
 		}
+		if (this.hasActiveTransientRender()) {
+			return;
+		}
 		const pendingPages = Array.from(this.pendingRedrawPages);
 		this.pendingRedrawPages.clear();
 		for (const pendingPage of pendingPages) {
 			if (this.shouldKeepPageHot(pendingPage) && !this.zoomingPages.has(pendingPage)) {
-				this.drawPageAnnotations(pendingPage);
+				this.startPageRenderJob(pendingPage);
 			}
 		}
 	}
 
 	private scheduleInteractionRedraw(pageNumber: number): void {
-		if (this.currentStroke || this.currentShape || this.currentLasso) {
+		if (this.currentStroke || this.currentShape || this.currentLasso || this.erasingSession) {
 			this.pendingInteractionRedrawPages.add(pageNumber);
 			if (this.interactionRedrawHandle !== null) {
 				return;
@@ -2944,12 +3359,84 @@ class NativePdfAnnotatorSession {
 		}
 	}
 
+	private deferCommittedPageRedraw(pageNumber: number, clearTransient = true): void {
+		this.cancelPendingInteractionRedraw();
+		const surface = this.pageSurfaces.get(pageNumber);
+		if (surface && clearTransient) {
+			this.clearTransientLayer(surface);
+		}
+		this.pendingCommittedRedrawPages.add(pageNumber);
+		this.scheduleCommittedRedrawAfterIdle(160);
+	}
+
+	private retainCommittedPagePixels(pageNumber: number): void {
+		this.pendingCommittedRedrawPages.delete(pageNumber);
+		if (this.pendingCommittedRedrawPages.size === 0 && this.committedRedrawHandle !== null) {
+			window.clearTimeout(this.committedRedrawHandle);
+			this.committedRedrawHandle = null;
+		}
+	}
+
+	private scheduleCommittedRedrawAfterIdle(delayMs = 700): void {
+		if (this.committedRedrawHandle !== null) {
+			window.clearTimeout(this.committedRedrawHandle);
+		}
+		const waitMs = Math.max(16, delayMs);
+		this.committedRedrawHandle = window.setTimeout(() => {
+			this.committedRedrawHandle = null;
+			if (this.hasActiveTransientRender()) {
+				this.scheduleCommittedRedrawAfterIdle(waitMs);
+				return;
+			}
+			const remainingIdleMs = Math.max(0, waitMs - (performance.now() - this.lastInkInputTimestamp));
+			if (remainingIdleMs > 0) {
+				this.scheduleCommittedRedrawAfterIdle(remainingIdleMs);
+				return;
+			}
+			const pages = Array.from(this.pendingCommittedRedrawPages);
+			this.pendingCommittedRedrawPages.clear();
+			for (const pageNumber of pages) {
+				this.schedulePageRedraw(pageNumber);
+			}
+		}, waitMs);
+	}
+
 	private cancelPendingInteractionRedraw(): void {
 		if (this.interactionRedrawHandle !== null) {
 			window.cancelAnimationFrame(this.interactionRedrawHandle);
 			this.interactionRedrawHandle = null;
 		}
 		this.pendingInteractionRedrawPages.clear();
+	}
+
+	private hasActiveTransientRender(): boolean {
+		return !!(this.currentStroke || this.currentShape || this.currentLasso || this.erasingSession);
+	}
+
+	private flushPendingCommittedPageRedraws(): void {
+		if (this.committedRedrawHandle !== null) {
+			window.clearTimeout(this.committedRedrawHandle);
+			this.committedRedrawHandle = null;
+		}
+		const pages = Array.from(this.pendingCommittedRedrawPages);
+		this.pendingCommittedRedrawPages.clear();
+		for (const pageNumber of pages) {
+			this.schedulePageRedraw(pageNumber);
+		}
+	}
+
+	private pauseCommittedRenderingForInkInput(): void {
+		this.lastInkInputTimestamp = performance.now();
+		this.cancelPageRenderJobs("cancelled by pointer input");
+		this.cancelPendingInteractionRedraw();
+		if (this.committedRedrawHandle !== null) {
+			window.clearTimeout(this.committedRedrawHandle);
+			this.committedRedrawHandle = null;
+		}
+		if (this.redrawHandle !== null) {
+			window.cancelAnimationFrame(this.redrawHandle);
+			this.redrawHandle = null;
+		}
 	}
 
 	private isPageNearViewport(pageNumber: number): boolean {
@@ -3433,6 +3920,9 @@ class NativePdfAnnotatorSession {
 			this.clearSelection();
 		}
 		this.toolState.setActiveTool(tool);
+		if (!isInkDrawingTool(tool) && this.pendingCommittedRedrawPages.size > 0) {
+			this.flushPendingCommittedPageRedraws();
+		}
 		if (!this.annotationMode) {
 			this.annotationMode = true;
 			this.applyOverlayMode();
@@ -4043,6 +4533,7 @@ class NativePdfAnnotatorSession {
 		this.pushHistory();
 		const insertedPageNumber = this.realPdfPageCount + boundedInsertIndex + 1;
 		this.annotationDocument.strokes = this.annotationDocument.strokes.map((stroke) => stroke.page >= insertedPageNumber ? { ...stroke, page: stroke.page + 1 } : stroke);
+		this.annotationDocument.eraserPaths = (this.annotationDocument.eraserPaths ?? []).map((eraserPath) => eraserPath.page >= insertedPageNumber ? { ...eraserPath, page: eraserPath.page + 1 } : eraserPath);
 		this.annotationDocument.textItems = this.annotationDocument.textItems.map((item) => item.page >= insertedPageNumber ? { ...item, page: item.page + 1 } : item);
 		this.annotationDocument.shapes = this.annotationDocument.shapes.map((shape) => shape.page >= insertedPageNumber ? { ...shape, page: shape.page + 1 } : shape);
 		this.annotationDocument.imageItems = (this.annotationDocument.imageItems ?? []).map((image) => image.page >= insertedPageNumber ? { ...image, page: image.page + 1 } : image);
@@ -4189,6 +4680,9 @@ class NativePdfAnnotatorSession {
 				this.annotationDocument.strokes = this.annotationDocument.strokes
 					.filter((stroke) => stroke.page !== pageNumber)
 					.map((stroke) => stroke.page > pageNumber ? { ...stroke, page: stroke.page - 1 } : stroke);
+				this.annotationDocument.eraserPaths = (this.annotationDocument.eraserPaths ?? [])
+					.filter((eraserPath) => eraserPath.page !== pageNumber)
+					.map((eraserPath) => eraserPath.page > pageNumber ? { ...eraserPath, page: eraserPath.page - 1 } : eraserPath);
 				this.annotationDocument.textItems = this.annotationDocument.textItems
 					.filter((item) => item.page !== pageNumber)
 					.map((item) => item.page > pageNumber ? { ...item, page: item.page - 1 } : item);
@@ -4233,6 +4727,7 @@ class NativePdfAnnotatorSession {
 					deletedPages.sort((a, b) => a - b);
 				}
 				this.annotationDocument.strokes = this.annotationDocument.strokes.filter((stroke) => stroke.page !== pageNumber);
+				this.annotationDocument.eraserPaths = (this.annotationDocument.eraserPaths ?? []).filter((eraserPath) => eraserPath.page !== pageNumber);
 				this.annotationDocument.textItems = this.annotationDocument.textItems.filter((item) => item.page !== pageNumber);
 				this.annotationDocument.shapes = this.annotationDocument.shapes.filter((shape) => shape.page !== pageNumber);
 				this.annotationDocument.imageItems = (this.annotationDocument.imageItems ?? []).filter((image) => image.page !== pageNumber);
@@ -4275,11 +4770,13 @@ class NativePdfAnnotatorSession {
 		const sourcePageNumber = this.realPdfPageCount + pageIndex + 1;
 		const insertedPageNumber = this.realPdfPageCount + insertIndex + 1;
 		const sourceStrokes = this.annotationDocument.strokes.filter((stroke) => stroke.page === sourcePageNumber);
+		const sourceEraserPaths = (this.annotationDocument.eraserPaths ?? []).filter((eraserPath) => eraserPath.page === sourcePageNumber);
 		const sourceTextItems = this.annotationDocument.textItems.filter((item) => item.page === sourcePageNumber);
 		const sourceShapes = this.annotationDocument.shapes.filter((shape) => shape.page === sourcePageNumber);
 		const sourceImages = (this.annotationDocument.imageItems ?? []).filter((image) => image.page === sourcePageNumber);
 		this.pushHistory();
 		this.annotationDocument.strokes = this.annotationDocument.strokes.map((stroke) => stroke.page >= insertedPageNumber ? { ...stroke, page: stroke.page + 1 } : stroke);
+		this.annotationDocument.eraserPaths = (this.annotationDocument.eraserPaths ?? []).map((eraserPath) => eraserPath.page >= insertedPageNumber ? { ...eraserPath, page: eraserPath.page + 1 } : eraserPath);
 		this.annotationDocument.textItems = this.annotationDocument.textItems.map((item) => item.page >= insertedPageNumber ? { ...item, page: item.page + 1 } : item);
 		this.annotationDocument.shapes = this.annotationDocument.shapes.map((shape) => shape.page >= insertedPageNumber ? { ...shape, page: shape.page + 1 } : shape);
 		this.annotationDocument.imageItems = (this.annotationDocument.imageItems ?? []).map((image) => image.page >= insertedPageNumber ? { ...image, page: image.page + 1 } : image);
@@ -4296,6 +4793,11 @@ class NativePdfAnnotatorSession {
 		if (includeAnnotations) {
 			const clonedAnnotations = cloneAnnotationsForPage(sourceStrokes, sourceTextItems, sourceShapes, insertedPageNumber);
 			this.annotationDocument.strokes.push(...clonedAnnotations.strokes);
+			this.annotationDocument.eraserPaths.push(...sourceEraserPaths.map((eraserPath) => ({
+				...JSON.parse(JSON.stringify(eraserPath)) as EraserPathAnnotation,
+				id: generateId("erase"),
+				page: insertedPageNumber
+			})));
 			this.annotationDocument.textItems.push(...clonedAnnotations.textItems);
 			this.annotationDocument.shapes.push(...clonedAnnotations.shapes);
 			if (!Array.isArray(this.annotationDocument.imageItems)) {
@@ -4341,6 +4843,7 @@ class NativePdfAnnotatorSession {
 		const pageNumber = this.realPdfPageCount + pageIndex + 1;
 		const hasContents =
 			this.annotationDocument.strokes.some((stroke) => stroke.page === pageNumber) ||
+			(this.annotationDocument.eraserPaths ?? []).some((eraserPath) => eraserPath.page === pageNumber) ||
 			this.annotationDocument.textItems.some((item) => item.page === pageNumber) ||
 			this.annotationDocument.shapes.some((shape) => shape.page === pageNumber) ||
 			(this.annotationDocument.imageItems ?? []).some((image) => image.page === pageNumber);
@@ -4357,6 +4860,7 @@ class NativePdfAnnotatorSession {
 				}
 				this.pushHistory();
 				this.annotationDocument.strokes = this.annotationDocument.strokes.filter((stroke) => stroke.page !== pageNumber);
+				this.annotationDocument.eraserPaths = (this.annotationDocument.eraserPaths ?? []).filter((eraserPath) => eraserPath.page !== pageNumber);
 				this.annotationDocument.textItems = this.annotationDocument.textItems.filter((item) => item.page !== pageNumber);
 				this.annotationDocument.shapes = this.annotationDocument.shapes.filter((shape) => shape.page !== pageNumber);
 				this.annotationDocument.imageItems = (this.annotationDocument.imageItems ?? []).filter((image) => image.page !== pageNumber);
@@ -6562,7 +7066,7 @@ class NativePdfAnnotatorSession {
 		if (!isInkDrawingTool(this.currentTool)) {
 			return "pan-x pan-y";
 		}
-		return this.getInkInputPolicy() === "allow-touch" ? "none" : "pan-x pan-y";
+		return this.getInkInputPolicy() === "pen-mouse-only" ? "pan-x pan-y" : "none";
 	}
 
 	private getInkInputPolicy(): InkInputPolicy {
@@ -6770,12 +7274,11 @@ class NativePdfAnnotatorSession {
 	};
 
 	private handleFallbackPointerDown(event: PointerEvent): void {
-		this.forceFinishStalePdfInteraction("New stroke recovered previous input");
 		if (!this.annotationMode || this.pointerPage !== null) {
 			return;
 		}
 		const target = isDomElement(event.target) ? event.target : null;
-		if (!target || target.closest(`.${SESSION_ROOT_CLASS}, .menu, .menu-item, .modal, .modal-container, .popover, .suggestion-container, .prompt, .pdf-native-annotator-popover-backdrop, .pdf-native-annotator-color-popover, .pdf-native-annotator-confirm-popover, .pdf-native-annotator-rename-popover, .pdf-native-annotator-font-popover, .pdf-native-annotator-stroke-popover, .pdf-native-annotator-page-list-popover, .pdf-native-annotator-inline-text-frame, .pdf-native-annotator-inline-text-editor, .pdf-native-annotator-inline-text-handle`)) {
+		if (!target || target.closest(`.${SESSION_ROOT_CLASS}, ${TOOLBAR_SELECTORS}, .menu, .menu-item, .modal, .modal-container, .popover, .suggestion-container, .prompt, .pdf-native-annotator-popover-backdrop, .pdf-native-annotator-color-popover, .pdf-native-annotator-confirm-popover, .pdf-native-annotator-rename-popover, .pdf-native-annotator-font-popover, .pdf-native-annotator-stroke-popover, .pdf-native-annotator-page-list-popover, .pdf-native-annotator-inline-text-frame, .pdf-native-annotator-inline-text-editor, .pdf-native-annotator-inline-text-handle`)) {
 			return;
 		}
 		if (target.closest(`.${OVERLAY_CLASS}`)) {
@@ -6889,7 +7392,6 @@ class NativePdfAnnotatorSession {
 	}
 
 	private readonly handlePointerDown = (event: PointerEvent): void => {
-		this.forceFinishStalePdfInteraction("New stroke recovered previous input");
 		if (this.activePdfPointerId === event.pointerId) {
 			return;
 		}
@@ -6902,7 +7404,6 @@ class NativePdfAnnotatorSession {
 	};
 
 	private handlePointerDownForCanvas(event: PointerEvent, canvas: HTMLCanvasElement): void {
-		this.forceFinishStalePdfInteraction("New stroke recovered previous input");
 		if (!this.annotationMode) {
 			this.refreshStatus("Could not start ink: annotation mode is off", 4000);
 			return;
@@ -6928,19 +7429,27 @@ class NativePdfAnnotatorSession {
 		if (shouldIgnoreInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())) {
 			return;
 		}
-		if (isInkDrawingTool(this.currentTool)) {
+		event.preventDefault();
+		const isInkInput = isInkDrawingTool(this.currentTool);
+		if (isInkInput) {
 			canvas.setCssStyles({ touchAction: "none" });
+			this.pauseCommittedRenderingForInkInput();
 		}
+		this.forceFinishStalePdfInteraction("New stroke recovered previous input");
 
 		this.currentPage = pageNumber;
-		this.refreshToolbar();
+		if (!isInkInput) {
+			this.refreshToolbar();
+		}
 		this.lastPdfPoint = null;
 		this.lastPdfPointTime = 0;
 		const point = this.getNormalizedPoint(surface, event);
+		if (isInkDrawingTool(this.currentTool)) {
+			this.renderTelemetry.recordPointerDown(this.currentTool, pageNumber, event);
+		}
 		if (this.inlineTextEditorEl) {
 			this.finishSessionInlineTextEditor(true);
 		}
-		event.preventDefault();
 		if (this.currentTool === "eraser") {
 			this.updateToolPreview(event.clientX, event.clientY, true);
 		}
@@ -7127,13 +7636,15 @@ class NativePdfAnnotatorSession {
 			this.pushHistory();
 			this.erasingSession = true;
 			this.lastEraserPoint = point;
+			this.eraserSessionPoints = [point];
+			this.objectErasePreviewTargets.clear();
 			this.pointerPage = pageNumber;
-			if (this.eraseAtPoint(pageNumber, point)) {
-				this.drawPageAnnotations(pageNumber);
-				this.refreshStatus(`Erasing (${this.eraserMode})`);
-			} else if (this.undoStack.length > 0) {
-				this.undoStack.pop();
+			if (this.eraserMode === "object") {
+				this.previewObjectErase(pageNumber, point, point);
+			} else {
+				this.eraseCommittedLayerAtPoint(surface, point);
 			}
+			this.refreshStatus(`Erasing (${this.eraserMode})`);
 			return;
 		}
 
@@ -7170,9 +7681,10 @@ class NativePdfAnnotatorSession {
 			zIndex,
 			createdAt: new Date().toISOString()
 		};
+		this.currentStrokeRenderedPointCount = 0;
 		this.pointerPage = pageNumber;
 		this.drawTransientPageAnnotations(pageNumber);
-		new Notice(`New stroke on page ${pageNumber}`, 900);
+		this.showDrawingNotice(`New stroke on page ${pageNumber}`, 900);
 		this.refreshStatus(`Stroke started: ${this.currentTool}, page ${pageNumber}, points 1`, 900);
 	}
 
@@ -7195,6 +7707,7 @@ class NativePdfAnnotatorSession {
 			this.unbindPdfPointerDocumentTracking();
 			this.pointerPage = null;
 			this.lastEraserPoint = null;
+			this.eraserSessionPoints = [];
 			this.dragMoved = false;
 		}
 	}
@@ -7204,12 +7717,16 @@ class NativePdfAnnotatorSession {
 			this.resetStalePdfPointerInteraction();
 			return;
 		}
+		this.freezeCurrentStrokeAtRenderedFrame();
 		const pageNumber = this.pointerPage ?? this.currentStroke?.page ?? this.currentShape?.page ?? this.currentLasso?.page ?? this.currentPage;
 		if (this.currentStroke && this.annotationDocument && this.currentStroke.points.length > 0) {
+			const committedStroke = this.currentStroke;
 			const pointCount = this.currentStroke.points.length;
 			this.pushStrokeAddHistory(this.currentStroke);
 			this.annotationDocument.strokes.push(this.currentStroke);
 			const strokeCount = this.annotationDocument.strokes.length;
+			const pageNumber = committedStroke.page;
+			this.promoteCurrentTransientPreview(pageNumber);
 			this.currentStroke = null;
 			this.currentShape = null;
 			this.currentLasso = null;
@@ -7217,11 +7734,16 @@ class NativePdfAnnotatorSession {
 			this.activeResizeHandle = null;
 			this.erasingSession = false;
 			this.lastEraserPoint = null;
+			this.eraserSessionPoints = [];
 			this.pointerPage = null;
 			this.dragMoved = false;
 			this.unbindPdfPointerDocumentTracking();
-			new Notice(`Stroke recorded (${pointCount} points, ${strokeCount} total)`, 1400);
-			this.markDirtyAndRedraw(`${message} (${pointCount} points, ${strokeCount} strokes)`);
+			this.invalidateAnnotationPageCache();
+			this.isDirty = true;
+			this.scheduleSave();
+			this.retainCommittedPagePixels(pageNumber);
+			this.showDrawingNotice(`Stroke recorded (${pointCount} points, ${strokeCount} total)`, 1400);
+			this.refreshStatus(`${message} (${pointCount} points, ${strokeCount} strokes)`);
 			return;
 		}
 		if (this.currentShape && this.annotationDocument) {
@@ -7233,6 +7755,7 @@ class NativePdfAnnotatorSession {
 			this.activeResizeHandle = null;
 			this.erasingSession = false;
 			this.lastEraserPoint = null;
+			this.eraserSessionPoints = [];
 			this.pointerPage = null;
 			this.dragMoved = false;
 			this.unbindPdfPointerDocumentTracking();
@@ -7246,6 +7769,7 @@ class NativePdfAnnotatorSession {
 		this.activeResizeHandle = null;
 		this.erasingSession = false;
 		this.lastEraserPoint = null;
+		this.eraserSessionPoints = [];
 		this.pointerPage = null;
 		this.dragMoved = false;
 		this.unbindPdfPointerDocumentTracking();
@@ -7258,12 +7782,15 @@ class NativePdfAnnotatorSession {
 		if (!this.annotationDocument) {
 			return;
 		}
+		this.freezeCurrentStrokeAtRenderedFrame();
 		if (this.currentStroke && this.currentStroke.points.length > 0) {
+			const committedStroke = this.currentStroke;
 			const pointCount = this.currentStroke.points.length;
 			this.pushStrokeAddHistory(this.currentStroke);
 			this.annotationDocument.strokes.push(this.currentStroke);
 			const strokeCount = this.annotationDocument.strokes.length;
-			const pageNumber = this.currentStroke.page;
+			const pageNumber = committedStroke.page;
+			this.promoteCurrentTransientPreview(pageNumber);
 			this.currentStroke = null;
 			this.currentShape = null;
 			this.currentLasso = null;
@@ -7271,14 +7798,15 @@ class NativePdfAnnotatorSession {
 			this.activeResizeHandle = null;
 			this.erasingSession = false;
 			this.lastEraserPoint = null;
+			this.eraserSessionPoints = [];
 			this.pointerPage = null;
 			this.dragMoved = false;
 			this.unbindPdfPointerDocumentTracking();
 			this.invalidateAnnotationPageCache();
 			this.isDirty = true;
 			this.scheduleSave();
-			this.drawPageAnnotations(pageNumber);
-			new Notice(`Stroke recorded before layout refresh (${pointCount} points, ${strokeCount} total)`, 1600);
+			this.retainCommittedPagePixels(pageNumber);
+			this.showDrawingNotice(`Stroke recorded before layout refresh (${pointCount} points, ${strokeCount} total)`, 1600);
 			this.refreshStatus(`Stroke recorded before layout refresh (${pointCount} points, ${strokeCount} strokes)`, 1200);
 			return;
 		}
@@ -7292,6 +7820,7 @@ class NativePdfAnnotatorSession {
 			this.activeResizeHandle = null;
 			this.erasingSession = false;
 			this.lastEraserPoint = null;
+			this.eraserSessionPoints = [];
 			this.pointerPage = null;
 			this.dragMoved = false;
 			this.unbindPdfPointerDocumentTracking();
@@ -7381,6 +7910,9 @@ class NativePdfAnnotatorSession {
 		}
 
 		event.preventDefault();
+		if (isInkDrawingTool(this.currentTool)) {
+			this.lastInkInputTimestamp = performance.now();
+		}
 		const points = this.getNormalizedPoints(surface, event);
 		if (points.length === 0) {
 			return;
@@ -7430,16 +7962,18 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		if (this.currentTool === "eraser" && this.erasingSession) {
-			let changed = false;
 			for (const sample of points) {
-				if (this.lastEraserPoint && this.eraseAlongPath(pageNumber, this.lastEraserPoint, sample, false)) {
-					changed = true;
+				if (this.eraserMode === "object") {
+					this.previewObjectErase(pageNumber, this.lastEraserPoint ?? sample, sample);
+				} else if (this.lastEraserPoint) {
+					this.eraseCommittedLayerAlongPath(surface, this.lastEraserPoint, sample);
+				} else {
+					this.eraseCommittedLayerAtPoint(surface, sample);
 				}
+				this.appendEraserSessionPoint(pageNumber, sample);
 				this.lastEraserPoint = sample;
 			}
-			if (changed) {
-				this.scheduleInteractionRedraw(pageNumber);
-			}
+			this.renderTelemetry.recordPointerSamples(event, points.length, this.eraserSessionPoints.length);
 			return;
 		}
 		if (!this.currentStroke && !this.currentShape) {
@@ -7452,6 +7986,7 @@ class NativePdfAnnotatorSession {
 		}
 
 		if (this.currentStroke && appendStrokePoints(this.currentStroke, points, { mergeThreshold: this.getStrokeMergeThreshold(surface) })) {
+			this.renderTelemetry.recordPointerSamples(event, points.length, this.currentStroke.points.length);
 			this.scheduleInteractionRedraw(pageNumber);
 		}
 	}
@@ -7469,6 +8004,10 @@ class NativePdfAnnotatorSession {
 	};
 
 	private handlePointerUpForCanvas(event: PointerEvent, canvas: HTMLCanvasElement | null): void {
+		if (isInkDrawingTool(this.currentTool)) {
+			this.lastInkInputTimestamp = performance.now();
+			this.renderTelemetry.recordPointerUp(event);
+		}
 		const pageNumber = canvas ? Number(canvas.dataset.pageNumber) : this.pointerPage;
 		if (canvas) {
 			try {
@@ -7495,18 +8034,54 @@ class NativePdfAnnotatorSession {
 			this.dragAnchor = null;
 			this.erasingSession = false;
 			this.lastEraserPoint = null;
+			this.eraserSessionPoints = [];
 			this.pointerPage = null;
 			return;
 		}
-		if (this.currentStroke && canvas) {
+		if (this.currentTool === "eraser" && this.erasingSession && canvas) {
 			const surface = this.pageSurfaces.get(pageNumber);
 			if (surface) {
-				appendStrokePoints(this.currentStroke, this.getNormalizedPoints(surface, event), {
-					mergeThreshold: this.getStrokeMergeThreshold(surface)
-				});
+				const points = this.getNormalizedPoints(surface, event);
+				const point = points[points.length - 1] ?? this.getNormalizedPoint(surface, event);
+				for (const sample of points) {
+					if (this.eraserMode === "object") {
+						this.previewObjectErase(pageNumber, this.lastEraserPoint ?? sample, sample);
+					} else if (this.lastEraserPoint) {
+						this.eraseCommittedLayerAlongPath(surface, this.lastEraserPoint, sample);
+					} else {
+						this.eraseCommittedLayerAtPoint(surface, sample);
+					}
+					this.appendEraserSessionPoint(pageNumber, sample);
+					this.lastEraserPoint = sample;
+				}
+				if (this.eraserMode === "object") {
+					this.previewObjectErase(pageNumber, this.lastEraserPoint ?? point, point);
+				} else if (this.lastEraserPoint) {
+					this.eraseCommittedLayerAlongPath(surface, this.lastEraserPoint, point);
+				} else {
+					this.eraseCommittedLayerAtPoint(surface, point);
+				}
+				this.appendEraserSessionPoint(pageNumber, point);
+				this.lastEraserPoint = point;
 			}
 		}
-		if (this.currentStroke || this.currentShape) {
+		if (this.currentStroke && canvas && event.pointerType === "touch") {
+			const surface = this.pageSurfaces.get(pageNumber);
+			if (surface) {
+				const releasePoint = this.getNormalizedPoint(surface, event);
+				const previousPoint = this.currentStroke.points[this.currentStroke.points.length - 1];
+				if (!previousPoint || distanceBetween(previousPoint, releasePoint) >= this.getStrokeMergeThreshold(surface)) {
+					appendStrokePoints(this.currentStroke, [releasePoint], { mergeThreshold: this.getStrokeMergeThreshold(surface) });
+				}
+				if (
+					this.currentStroke.points.length <= 3 &&
+					this.currentStrokeRenderedPointCount < this.currentStroke.points.length
+				) {
+					this.drawTransientPageAnnotations(pageNumber);
+				}
+			}
+		}
+		if (this.currentStroke || this.currentShape || this.erasingSession) {
 			this.cancelPendingInteractionRedraw();
 		} else {
 			this.flushInteractionRedraw(pageNumber);
@@ -7626,22 +8201,28 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		if (this.currentTool === "eraser") {
+			const changed = this.applyEraserSession(pageNumber);
 			this.erasingSession = false;
 			this.lastEraserPoint = null;
 			this.pointerPage = null;
-			if (this.isDirty) {
-				this.markDirtyAndRedraw(`Erased (${this.eraserMode})`);
+			this.eraserSessionPoints = [];
+			this.objectErasePreviewTargets.clear();
+			if (changed) {
+				this.retainCommittedPagePixels(pageNumber);
+				this.refreshStatus(`Erased (${this.eraserMode})`);
 			} else {
 				if (this.undoStack.length > 0) {
 					this.undoStack.pop();
 				}
 				this.refreshStatus("Eraser ready");
-				this.drawAllAnnotations();
 			}
 			this.refreshToolPreviewFromLastPointer(false);
 			return;
 		}
 
+		this.freezeCurrentStrokeAtRenderedFrame();
+		const committedPreviewStroke = this.currentStroke;
+		const committedPreviewShape = this.currentShape;
 		if (this.currentShape) {
 			this.annotationDocument.shapes.push(this.currentShape);
 		} else if (this.currentStroke && this.currentStroke.points.length > 0) {
@@ -7649,17 +8230,26 @@ class NativePdfAnnotatorSession {
 			this.refreshStatus(`Saving stroke: ${pointCount} points`, 3000);
 			this.pushStrokeAddHistory(this.currentStroke);
 			this.annotationDocument.strokes.push(this.currentStroke);
-			new Notice(`Stroke recorded (${pointCount} points, ${this.annotationDocument.strokes.length} total)`, 1400);
+			this.renderTelemetry.recordStrokeCommit(pointCount, this.annotationDocument.strokes.length);
+			this.showDrawingNotice(`Stroke recorded (${pointCount} points, ${this.annotationDocument.strokes.length} total)`, 1400);
 			this.refreshStatus(`Stroke recorded (${pointCount} points, ${this.annotationDocument.strokes.length} strokes)`, 900);
 		}
 		this.invalidateAnnotationPageCache();
 		this.isDirty = true;
 		this.scheduleSave();
+		if (committedPreviewStroke || committedPreviewShape) {
+			this.promoteCurrentTransientPreview(pageNumber);
+		}
 		this.currentStroke = null;
+		this.currentStrokeRenderedPointCount = 0;
 		this.currentShape = null;
 		this.pointerPage = null;
 		this.refreshToolPreviewFromLastPointer(false);
-		this.flushInteractionRedraw(pageNumber);
+		if (committedPreviewStroke) {
+			this.retainCommittedPagePixels(pageNumber);
+		} else {
+			this.deferCommittedPageRedraw(pageNumber);
+		}
 		this.refreshStatus(isShapeTool(this.currentTool) ? "Shape saved" : "Stroke saved");
 	}
 
@@ -7681,6 +8271,7 @@ class NativePdfAnnotatorSession {
 			canvas.setCssStyles({ touchAction: this.getOverlayTouchAction() });
 		}
 		this.unbindPdfPointerDocumentTracking();
+		this.renderTelemetry.recordInputCancelled();
 		this.cancelActiveSessionInteraction();
 	}
 
@@ -7720,172 +8311,230 @@ class NativePdfAnnotatorSession {
 		return 1 / Math.max(surface.lastWidth || surface.overlayEl.getBoundingClientRect().width || 1, 1);
 	}
 
-	private eraseAtPoint(pageNumber: number, point: AnnotationPoint, pushHistory = true): boolean {
-		if (!this.annotationDocument) {
-			return false;
-		}
-
-		const threshold = this.getEraserThreshold(pageNumber);
-		const hit = this.findSelectableTarget(pageNumber, point, threshold);
-		if (!hit) {
-			return false;
-		}
-
-		if (hit.kind === "text") {
-			const textIndex = this.annotationDocument.textItems.findIndex((item) => item.id === hit.id);
-			if (textIndex < 0) {
-				return false;
-			}
-			if (pushHistory) {
-				this.pushHistory();
-			}
-			this.annotationDocument.textItems.splice(textIndex, 1);
-			this.invalidateAnnotationPageCache();
-			this.isDirty = true;
-			this.scheduleSave();
-			return true;
-		}
-
-		if (hit.kind === "stroke") {
-			const strokeIndex = this.annotationDocument.strokes.findIndex((stroke) => stroke.id === hit.id);
-			if (strokeIndex < 0) {
-				return false;
-			}
-			if (pushHistory) {
-				this.pushHistory();
-			}
-			const stroke = this.annotationDocument.strokes[strokeIndex];
-			if (this.eraserMode === "object") {
-				this.annotationDocument.strokes.splice(strokeIndex, 1);
-			} else {
-				const remainingSegments = splitStrokeByEraser(stroke, point, 0.02);
-				this.annotationDocument.strokes.splice(strokeIndex, 1, ...remainingSegments);
-			}
-			this.invalidateAnnotationPageCache();
-			this.isDirty = true;
-			this.scheduleSave();
-			return true;
-		}
-
-		if (hit.kind === "image") {
-			const imageIndex = (this.annotationDocument.imageItems ?? []).findIndex((image) => image.id === hit.id);
-			if (imageIndex < 0) {
-				return false;
-			}
-			if (pushHistory) {
-				this.pushHistory();
-			}
-			this.annotationDocument.imageItems?.splice(imageIndex, 1);
-			this.invalidateAnnotationPageCache();
-			this.isDirty = true;
-			this.scheduleSave();
-			return true;
-		}
-
-		const shapeIndex = this.annotationDocument.shapes.findIndex((shape) => shape.id === hit.id);
-		if (shapeIndex >= 0) {
-			if (pushHistory) {
-				this.pushHistory();
-			}
-			this.annotationDocument.shapes.splice(shapeIndex, 1);
-			this.invalidateAnnotationPageCache();
-			this.isDirty = true;
-			this.scheduleSave();
-			return true;
-		}
-
-		return false;
+	private freezeCurrentStrokeAtRenderedFrame(): void {
+		// Rendering is a consumer of recorded input. A delayed preview must never
+		// truncate touch samples that arrived after the most recent animation frame.
 	}
 
-	private eraseAlongPath(
-		pageNumber: number,
-		start: AnnotationPoint,
-		end: AnnotationPoint,
-		pushHistory = true
-	): boolean {
-		if (!this.annotationDocument) {
+	private appendEraserSessionPoint(pageNumber: number, point: AnnotationPoint): void {
+		const lastPoint = this.eraserSessionPoints[this.eraserSessionPoints.length - 1];
+		if (!lastPoint) {
+			this.eraserSessionPoints.push(point);
+			return;
+		}
+		const minDistance = Math.max(this.getEraserThreshold(pageNumber) * 0.25, 0.0008);
+		if (distanceBetween(lastPoint, point) >= minDistance) {
+			this.eraserSessionPoints.push(point);
+		} else {
+			this.eraserSessionPoints[this.eraserSessionPoints.length - 1] = point;
+		}
+	}
+
+	private getEraserSessionSegments(points: AnnotationPoint[]): { start: AnnotationPoint; end: AnnotationPoint }[] {
+		if (points.length === 0) {
+			return [];
+		}
+		if (points.length === 1) {
+			return [{ start: points[0], end: points[0] }];
+		}
+		const segments: { start: AnnotationPoint; end: AnnotationPoint }[] = [];
+		for (let index = 1; index < points.length; index += 1) {
+			segments.push({ start: points[index - 1], end: points[index] });
+		}
+		return segments;
+	}
+
+	private applyEraserSession(pageNumber: number): boolean {
+		if (!this.annotationDocument || this.eraserSessionPoints.length === 0) {
 			return false;
 		}
-
-		let changed = false;
 		const threshold = this.getEraserThreshold(pageNumber);
-		const segmentHit = (point: AnnotationPoint) => distanceToSegment(point, start, end) <= threshold;
-
-		if (this.eraserMode === "object") {
-			return this.eraseObjectAlongPath(pageNumber, start, end, threshold, pushHistory);
-		}
-
-		const nextStrokes: StrokeAnnotation[] = [];
-		const textIdsToErase = new Set<string>();
-		for (const item of this.annotationDocument.textItems) {
-			if (item.page !== pageNumber) {
-				continue;
-			}
-			const bounds = getTextBounds(item);
-			if (segmentIntersectsExpandedBounds(start, end, bounds, threshold)) {
-				textIdsToErase.add(item.id);
-			}
-		}
-		if (textIdsToErase.size > 0) {
-			if (pushHistory && !changed) {
-				this.pushHistory();
-			}
-			this.annotationDocument.textItems = this.annotationDocument.textItems.filter((item) => !textIdsToErase.has(item.id));
-			changed = true;
-		}
-		for (const stroke of this.annotationDocument.strokes) {
-			if (stroke.page !== pageNumber) {
-				nextStrokes.push(stroke);
-				continue;
-			}
-			const touched = stroke.points.some((strokePoint) => segmentHit(strokePoint));
-			if (!touched) {
-				nextStrokes.push(stroke);
-				continue;
-			}
-			if (pushHistory && !changed) {
-				this.pushHistory();
-			}
-			changed = true;
-			nextStrokes.push(...splitStrokeByEraserPath(stroke, start, end, threshold));
-		}
-
+		const points = [...this.eraserSessionPoints];
+		const changed = this.eraserMode === "object"
+			? this.applyObjectEraserSession(pageNumber, points, threshold)
+			: this.applySegmentEraserSession(pageNumber, points, threshold);
 		if (changed) {
 			this.invalidateAnnotationPageCache();
-			this.annotationDocument.strokes = nextStrokes;
 			this.isDirty = true;
 			this.scheduleSave();
 		}
-
 		return changed;
 	}
 
-	private eraseObjectAlongPath(
-		pageNumber: number,
-		start: AnnotationPoint,
-		end: AnnotationPoint,
-		threshold: number,
-		pushHistory = true
-	): boolean {
+	private applyObjectEraserSession(pageNumber: number, points: AnnotationPoint[], threshold: number): boolean {
+		const targets = new Map<string, SelectedTarget>();
+		const addTargets = (nextTargets: SelectedTarget[]): void => {
+			for (const target of nextTargets) {
+				targets.set(this.getObjectEraseTargetKey(target), target);
+			}
+		};
+		addTargets(Array.from(this.objectErasePreviewTargets.values()));
+		for (const segment of this.getEraserSessionSegments(points)) {
+			addTargets(this.findObjectEraseTargetsAlongPath(pageNumber, segment.start, segment.end, threshold));
+		}
+		const eraseTargets = Array.from(targets.values());
+		const targetsMissingFromPreview = eraseTargets.filter((target) => {
+			const key = this.getObjectEraseTargetKey(target);
+			if (this.objectErasePreviewTargets.has(key)) {
+				return false;
+			}
+			this.objectErasePreviewTargets.set(key, target);
+			return true;
+		});
+		this.redrawObjectErasePreview(pageNumber, targetsMissingFromPreview);
+		return this.removeEraseTargets(eraseTargets);
+	}
+
+	private previewObjectErase(pageNumber: number, start: AnnotationPoint, end: AnnotationPoint): void {
+		const threshold = this.getEraserThreshold(pageNumber);
+		const addedTargets: SelectedTarget[] = [];
+		const addTargets = (targets: SelectedTarget[]): void => {
+			for (const target of targets) {
+				const key = this.getObjectEraseTargetKey(target);
+				if (!this.objectErasePreviewTargets.has(key)) {
+					this.objectErasePreviewTargets.set(key, target);
+					addedTargets.push(target);
+				}
+			}
+		};
+		addTargets(this.findObjectEraseTargetsAlongPath(pageNumber, start, end, threshold));
+		this.redrawObjectErasePreview(pageNumber, addedTargets);
+	}
+
+	private applySegmentEraserSession(pageNumber: number, points: AnnotationPoint[], threshold: number): boolean {
 		if (!this.annotationDocument) {
 			return false;
 		}
-
-		const hit = this.findObjectEraseTargetAlongPath(pageNumber, start, end, threshold);
-		if (!hit) {
+		const segments = this.getEraserSessionSegments(points);
+		const touched = segments.some((segment) =>
+			this.findObjectEraseTargetsAlongPath(pageNumber, segment.start, segment.end, threshold).length > 0
+		);
+		if (!touched) {
 			return false;
 		}
-		return this.eraseTarget(hit, pushHistory);
+		const surface = this.pageSurfaces.get(pageNumber);
+		const pageWidth = Math.max(surface?.lastWidth ?? 1, 1);
+		const eraserPath: EraserPathAnnotation = {
+			id: generateId("erase"),
+			page: pageNumber,
+			points,
+			radiusScale: (this.getToolPreviewRadius() + 1) / pageWidth,
+			zIndex: this.getNextPageZIndex(pageNumber),
+			createdAt: new Date().toISOString()
+		};
+		this.annotationDocument.eraserPaths = [...(this.annotationDocument.eraserPaths ?? []), eraserPath];
+		return migrateLegacyEraserPaths(this.annotationDocument);
 	}
 
-	private findObjectEraseTargetAlongPath(
+	private removeEraseTargets(targets: SelectedTarget[]): boolean {
+		if (!this.annotationDocument || targets.length === 0) {
+			return false;
+		}
+		const textIds = new Set(targets.filter((target) => target.kind === "text").map((target) => target.id));
+		const strokeIds = new Set(targets.filter((target) => target.kind === "stroke").map((target) => target.id));
+		const shapeIds = new Set(targets.filter((target) => target.kind === "shape").map((target) => target.id));
+		const imageIds = new Set(targets.filter((target) => target.kind === "image").map((target) => target.id));
+		const beforeTextCount = this.annotationDocument.textItems.length;
+		const beforeStrokeCount = this.annotationDocument.strokes.length;
+		const beforeShapeCount = this.annotationDocument.shapes.length;
+		const beforeImageCount = this.annotationDocument.imageItems?.length ?? 0;
+
+		if (textIds.size > 0) {
+			this.annotationDocument.textItems = this.annotationDocument.textItems.filter((item) => !textIds.has(item.id));
+		}
+		if (strokeIds.size > 0) {
+			this.annotationDocument.strokes = this.annotationDocument.strokes.filter((stroke) => !strokeIds.has(stroke.id));
+		}
+		if (shapeIds.size > 0) {
+			this.annotationDocument.shapes = this.annotationDocument.shapes.filter((shape) => !shapeIds.has(shape.id));
+		}
+		if (imageIds.size > 0 && this.annotationDocument.imageItems) {
+			this.annotationDocument.imageItems = this.annotationDocument.imageItems.filter((image) => !imageIds.has(image.id));
+		}
+
+		return this.annotationDocument.textItems.length !== beforeTextCount ||
+			this.annotationDocument.strokes.length !== beforeStrokeCount ||
+			this.annotationDocument.shapes.length !== beforeShapeCount ||
+			(this.annotationDocument.imageItems?.length ?? 0) !== beforeImageCount;
+	}
+
+	private getObjectEraseTargetKey(target: SelectedTarget): string {
+		return `${target.kind}:${target.page}:${target.id}`;
+	}
+
+	private redrawObjectErasePreview(pageNumber: number, changedTargets: SelectedTarget[]): void {
+		if (!this.annotationDocument || changedTargets.length === 0) {
+			return;
+		}
+		const surface = this.pageSurfaces.get(pageNumber);
+		if (!surface) {
+			return;
+		}
+		this.ensureOverlayLayerOrder(surface);
+		this.resizeOverlay(surface);
+		const renderCanvas = this.getNextPageRenderSlot(surface);
+		const context = renderCanvas.getContext("2d", { willReadFrequently: true });
+		if (!context || !surface.overlayEl.getContext("2d")) {
+			return;
+		}
+		const ratio = window.devicePixelRatio || 1;
+		const excludedKeys = new Set(this.objectErasePreviewTargets.keys());
+
+		context.setTransform(1, 0, 0, 1, 0, 0);
+		context.clearRect(0, 0, renderCanvas.width, renderCanvas.height);
+		context.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+		const bucket = this.getPageAnnotationBucket(pageNumber);
+		for (const imageItem of bucket.imageItems) {
+			if (!excludedKeys.has(this.getObjectEraseTargetKey({ kind: "image", id: imageItem.id, page: pageNumber }))) {
+				this.drawImageAnnotation(context, surface, imageItem);
+			}
+		}
+		const renderables = getAnnotationRenderables(bucket.strokes, bucket.textItems, bucket.shapes);
+		for (const renderable of renderables) {
+			if (
+				excludedKeys.has(this.getObjectEraseTargetKey({
+					kind: renderable.kind,
+					id: renderable.annotation.id,
+					page: pageNumber
+				}))
+			) {
+				continue;
+			}
+			if (renderable.kind === "stroke") {
+				this.drawStroke(context, surface, renderable.annotation);
+			} else if (renderable.kind === "text") {
+				this.drawText(context, surface, renderable.annotation);
+			} else if (renderable.kind === "shape") {
+				this.drawShape(context, surface, renderable.annotation);
+			}
+		}
+		const inlinePreviewText = this.getInlineTextPreviewItem(pageNumber);
+		if (inlinePreviewText) {
+			this.drawText(context, surface, inlinePreviewText);
+		}
+		const pageSelections = this.selectedTargets.filter((target) => target.page === pageNumber);
+		if (pageSelections.length > 0) {
+			this.drawSelection(context, surface, pageSelections);
+		}
+		if (this.lastSelectionRegion?.page === pageNumber) {
+			this.drawFocusedRegion(context, surface, this.lastSelectionRegion.rect);
+		}
+		if (this.focusedRegion && this.focusedRegionPage === pageNumber) {
+			this.drawFocusedRegion(context, surface, this.focusedRegion);
+		}
+
+		this.publishRenderedCanvas(renderCanvas, surface.overlayEl);
+	}
+
+	private findObjectEraseTargetsAlongPath(
 		pageNumber: number,
 		start: AnnotationPoint,
 		end: AnnotationPoint,
 		threshold: number
-	): SelectedTarget | null {
+	): SelectedTarget[] {
 		if (!this.annotationDocument) {
-			return null;
+			return [];
 		}
 		const candidates: HitCandidate[] = [];
 
@@ -7948,11 +8597,14 @@ class NativePdfAnnotatorSession {
 		}
 
 		if (candidates.length === 0) {
-			return null;
+			return [];
 		}
 		candidates.sort((left, right) => left.score - right.score);
-		const best = candidates[0];
-		return { kind: best.kind, id: best.id, page: best.page };
+		return candidates.map((candidate) => ({
+			kind: candidate.kind,
+			id: candidate.id,
+			page: candidate.page
+		}));
 	}
 
 	private eraseTarget(target: SelectedTarget, pushHistory = true): boolean {
@@ -8010,25 +8662,30 @@ class NativePdfAnnotatorSession {
 
 	private invalidateAnnotationPageCache(): void {
 		this.annotationPageCache = null;
-		this.strokePathCache.clear();
+		if (!this.annotationDocument) {
+			this.strokePathCache.clear();
+		}
 	}
 
 	private getPageAnnotationBucket(pageNumber: number): PageAnnotationBucket {
 		if (!this.annotationDocument) {
-			return { strokes: [], textItems: [], shapes: [], imageItems: [] };
+			return { strokes: [], eraserPaths: [], textItems: [], shapes: [], imageItems: [] };
 		}
 		if (!this.annotationPageCache) {
 			const cache = new Map<number, PageAnnotationBucket>();
 			const getBucket = (page: number): PageAnnotationBucket => {
 				let bucket = cache.get(page);
 				if (!bucket) {
-					bucket = { strokes: [], textItems: [], shapes: [], imageItems: [] };
+					bucket = { strokes: [], eraserPaths: [], textItems: [], shapes: [], imageItems: [] };
 					cache.set(page, bucket);
 				}
 				return bucket;
 			};
 			for (const stroke of this.annotationDocument.strokes) {
 				getBucket(stroke.page).strokes.push(stroke);
+			}
+			for (const eraserPath of this.annotationDocument.eraserPaths ?? []) {
+				getBucket(eraserPath.page).eraserPaths.push(eraserPath);
 			}
 			for (const textItem of this.annotationDocument.textItems) {
 				getBucket(textItem.page).textItems.push(textItem);
@@ -8041,13 +8698,14 @@ class NativePdfAnnotatorSession {
 			}
 			this.annotationPageCache = cache;
 		}
-		return this.annotationPageCache.get(pageNumber) ?? { strokes: [], textItems: [], shapes: [], imageItems: [] };
+		return this.annotationPageCache.get(pageNumber) ?? { strokes: [], eraserPaths: [], textItems: [], shapes: [], imageItems: [] };
 	}
 
 	private drawPageAnnotations(pageNumber: number): void {
 		if (!this.annotationDocument) {
 			return;
 		}
+		this.cancelPageRenderJob(pageNumber);
 
 		const surface = this.pageSurfaces.get(pageNumber);
 		if (!surface) {
@@ -8077,7 +8735,8 @@ class NativePdfAnnotatorSession {
 		for (const imageItem of bucket.imageItems) {
 			this.drawImageAnnotation(context, surface, imageItem);
 		}
-		for (const renderable of getAnnotationRenderables(bucket.strokes, bucket.textItems, bucket.shapes)) {
+		const renderables = getAnnotationRenderables(bucket.strokes, bucket.textItems, bucket.shapes);
+		for (const renderable of renderables) {
 			if (renderable.kind === "stroke") {
 				this.drawStroke(context, surface, renderable.annotation);
 			} else if (renderable.kind === "text") {
@@ -8085,7 +8744,7 @@ class NativePdfAnnotatorSession {
 					continue;
 				}
 				this.drawText(context, surface, renderable.annotation);
-			} else {
+			} else if (renderable.kind === "shape") {
 				this.drawShape(context, surface, renderable.annotation);
 			}
 		}
@@ -8115,7 +8774,7 @@ class NativePdfAnnotatorSession {
 		let image = this.imageElementCache.get(imageItem.id);
 		if (!image || image.src !== imageItem.dataUrl) {
 			image = new Image();
-			image.onload = () => this.drawPageAnnotations(imageItem.page);
+			image.onload = () => this.schedulePageRedraw(imageItem.page);
 			image.src = imageItem.dataUrl;
 			this.imageElementCache.set(imageItem.id, image);
 		}
@@ -8133,6 +8792,68 @@ class NativePdfAnnotatorSession {
 		context.restore();
 	}
 
+	private promoteCurrentTransientPreview(pageNumber: number): void {
+		const surface = this.pageSurfaces.get(pageNumber);
+		if (!surface) {
+			return;
+		}
+		if (this.currentStroke?.page === pageNumber) {
+			this.strokePathCache.delete(this.currentStroke.id);
+			this.drawTransientPageAnnotations(pageNumber, true);
+		} else {
+			this.drawTransientPageAnnotations(pageNumber);
+		}
+		this.promoteTransientLayer(surface);
+	}
+
+	private promoteTransientLayer(surface: PageSurface): void {
+		const context = surface.overlayEl.getContext("2d");
+		if (!context) {
+			return;
+		}
+		context.save();
+		context.setTransform(1, 0, 0, 1, 0, 0);
+		context.drawImage(surface.transientEl, 0, 0);
+		context.restore();
+		this.clearTransientLayer(surface);
+	}
+
+	private eraseCommittedLayerAtPoint(surface: PageSurface, point: AnnotationPoint): void {
+		const radius = this.getToolPreviewRadius();
+		const context = surface.overlayEl.getContext("2d");
+		if (!context || radius <= 0) {
+			return;
+		}
+		const ratio = window.devicePixelRatio || 1;
+		context.save();
+		context.setTransform(ratio, 0, 0, ratio, 0, 0);
+		context.globalCompositeOperation = "destination-out";
+		context.beginPath();
+		context.arc(point.x * surface.lastWidth, point.y * surface.lastHeight, radius + 1, 0, Math.PI * 2);
+		context.fill();
+		context.restore();
+	}
+
+	private eraseCommittedLayerAlongPath(surface: PageSurface, start: AnnotationPoint, end: AnnotationPoint): void {
+		const radius = this.getToolPreviewRadius();
+		const context = surface.overlayEl.getContext("2d");
+		if (!context || radius <= 0) {
+			return;
+		}
+		const ratio = window.devicePixelRatio || 1;
+		context.save();
+		context.setTransform(ratio, 0, 0, ratio, 0, 0);
+		context.globalCompositeOperation = "destination-out";
+		context.lineCap = "round";
+		context.lineJoin = "round";
+		context.lineWidth = Math.max(1, radius * 2);
+		context.beginPath();
+		context.moveTo(start.x * surface.lastWidth, start.y * surface.lastHeight);
+		context.lineTo(end.x * surface.lastWidth, end.y * surface.lastHeight);
+		context.stroke();
+		context.restore();
+	}
+
 	private clearTransientLayer(surface: PageSurface): void {
 		const context = surface.transientEl.getContext("2d");
 		if (!context) {
@@ -8143,7 +8864,7 @@ class NativePdfAnnotatorSession {
 		context.clearRect(0, 0, surface.lastWidth, surface.lastHeight);
 	}
 
-	private drawTransientPageAnnotations(pageNumber: number): void {
+	private drawTransientPageAnnotations(pageNumber: number, commitCurrentStroke = false): void {
 		const surface = this.pageSurfaces.get(pageNumber);
 		if (!surface) {
 			return;
@@ -8156,7 +8877,9 @@ class NativePdfAnnotatorSession {
 		context.setTransform(ratio, 0, 0, ratio, 0, 0);
 		context.clearRect(0, 0, surface.lastWidth, surface.lastHeight);
 		if (this.currentStroke?.page === pageNumber) {
-			this.drawStroke(context, surface, this.currentStroke, true, true);
+			const predictTail = this.plugin.getLivePreviewMode() === "quality";
+			this.drawStroke(context, surface, this.currentStroke, commitCurrentStroke ? false : predictTail, !commitCurrentStroke);
+			this.currentStrokeRenderedPointCount = this.currentStroke.points.length;
 		}
 		if (this.currentShape?.page === pageNumber) {
 			this.drawShape(context, surface, this.currentShape);
@@ -8211,9 +8934,9 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		if (!livePreview) {
-			const cachedPath = this.getCachedStrokePath(surface, stroke, baseWidth, usePressure, predictTail);
-			if (cachedPath) {
-				context.fill(cachedPath);
+			const cachedOutline = this.getCachedStrokeOutline(surface, stroke, baseWidth, usePressure, predictTail);
+			if (cachedOutline) {
+				fillInkStrokeOutline(context, cachedOutline);
 				return;
 			}
 		}
@@ -8229,36 +8952,48 @@ class NativePdfAnnotatorSession {
 		);
 	}
 
-	private getCachedStrokePath(
+	private getStrokePathSignature(
 		surface: PageSurface,
 		stroke: StrokeAnnotation,
 		baseWidth: number,
-		usePressure: boolean,
-		predictTail: boolean
-	): Path2D | null {
-		if (predictTail || stroke.points.length < 4) {
-			return null;
+		usePressure: boolean
+	): string {
+		let pointHash = 2166136261;
+		for (const point of stroke.points) {
+			pointHash ^= Math.round(point.x * 100000);
+			pointHash = Math.imul(pointHash, 16777619);
+			pointHash ^= Math.round(point.y * 100000);
+			pointHash = Math.imul(pointHash, 16777619);
+			pointHash ^= Math.round(point.pressure * 1000);
+			pointHash = Math.imul(pointHash, 16777619);
 		}
-		const first = stroke.points[0];
-		const last = stroke.points[stroke.points.length - 1];
-		const signature = [
+		return [
 			surface.lastWidth.toFixed(1),
 			surface.lastHeight.toFixed(1),
 			baseWidth.toFixed(2),
 			usePressure ? "p" : "u",
 			stroke.points.length,
-			first.x.toFixed(5),
-			first.y.toFixed(5),
-			last.x.toFixed(5),
-			last.y.toFixed(5),
-			last.pressure.toFixed(3)
+			pointHash >>> 0
 		].join(":");
+	}
+
+	private getCachedStrokeOutline(
+		surface: PageSurface,
+		stroke: StrokeAnnotation,
+		baseWidth: number,
+		usePressure: boolean,
+		predictTail: boolean
+	): InkStrokeOutline | null {
+		if (predictTail || stroke.points.length < 4) {
+			return null;
+		}
+		const signature = this.getStrokePathSignature(surface, stroke, baseWidth, usePressure);
 		const key = stroke.id;
 		const cached = this.strokePathCache.get(key);
 		if (cached?.signature === signature) {
-			return cached.path;
+			return cached.outline;
 		}
-		const pathData = getSmoothInkStrokePath(
+		const outline = getSmoothInkStrokeOutline(
 			stroke.points,
 			surface.lastWidth,
 			surface.lastHeight,
@@ -8266,13 +9001,12 @@ class NativePdfAnnotatorSession {
 			usePressure,
 			false
 		);
-		if (!pathData) {
+		if (!outline) {
 			this.strokePathCache.delete(key);
 			return null;
 		}
-		const path = new Path2D(pathData);
-		this.strokePathCache.set(key, { signature, path });
-		return path;
+		this.strokePathCache.set(key, { signature, outline });
+		return outline;
 	}
 
 	private drawText(context: CanvasRenderingContext2D, surface: PageSurface, textItem: TextAnnotation): void {
@@ -9158,6 +9892,12 @@ class NativePdfAnnotatorSession {
 		}
 	}
 
+	private showDrawingNotice(message: string, durationMs: number): void {
+		if (this.plugin.shouldShowDrawingNotices()) {
+			new Notice(message, durationMs);
+		}
+	}
+
 	private pushHistory(): void {
 		if (!this.annotationDocument) {
 			return;
@@ -10017,8 +10757,20 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		return this.settingsController.shouldShowAnnotatedEmbedHeader();
 	}
 
+	shouldShowDrawingNotices(): boolean {
+		return this.settingsController.shouldShowDrawingNotices();
+	}
+
+	shouldShowRenderTelemetry(): boolean {
+		return this.settingsController.shouldShowRenderTelemetry();
+	}
+
 	getInkInputPolicy(): InkInputPolicy {
 		return this.settingsController.getInkInputPolicy();
+	}
+
+	getLivePreviewMode(): LivePreviewMode {
+		return this.settingsController.getLivePreviewMode();
 	}
 
 	getInkRenderSettings(): InkRenderSettings {
@@ -10133,7 +10885,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		this.settingsController.updateToolPreferences(snapshot, presets);
 	}
 
-	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "showAnnotatedEmbedHeader" | "inkInputPolicy" | "inkRenderSettings" | "autosaveDelayMs">>): Promise<void> {
+	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs">>): Promise<void> {
 		await this.settingsController.updateBehaviorSettings(nextSettings);
 	}
 
