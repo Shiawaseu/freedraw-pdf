@@ -13,6 +13,10 @@ function normalizeLivePreviewMode(value: unknown): LivePreviewMode {
 	return value === "quality" || value === "fast" ? value : DEFAULT_SETTINGS.livePreviewMode;
 }
 
+function normalizeColor(value: unknown, fallback: string): string {
+	return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+}
+
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
 	return typeof value === "number" && Number.isFinite(value)
 		? Math.max(min, Math.min(max, value))
@@ -70,6 +74,7 @@ export class PDFAnnotatorSettingsController {
 				}
 			},
 			presets: normalizedPresets,
+			textColor: normalizeColor(loaded?.textColor, DEFAULT_SETTINGS.textColor),
 			preferInlineToolbar: typeof loaded?.preferInlineToolbar === "boolean" ? loaded.preferInlineToolbar : DEFAULT_SETTINGS.preferInlineToolbar,
 			showRegionToolbarButton: typeof loaded?.showRegionToolbarButton === "boolean" ? loaded.showRegionToolbarButton : DEFAULT_SETTINGS.showRegionToolbarButton,
 			showCopyEmbedToolbarButton: typeof loaded?.showCopyEmbedToolbarButton === "boolean" ? loaded.showCopyEmbedToolbarButton : DEFAULT_SETTINGS.showCopyEmbedToolbarButton,
@@ -99,6 +104,10 @@ export class PDFAnnotatorSettingsController {
 			selectedPresetIds: { ...(this.settings.toolDefaults.selectedPresetIds ?? {}) },
 			widths: { ...this.settings.toolDefaults.widths }
 		};
+	}
+
+	getTextColor(): string {
+		return this.settings.textColor;
 	}
 
 	getInlineToolbarPreference(): boolean {
@@ -155,6 +164,11 @@ export class PDFAnnotatorSettingsController {
 		this.scheduleSave();
 	}
 
+	updateTextColor(color: string): void {
+		this.settings.textColor = normalizeColor(color, this.settings.textColor);
+		this.scheduleSave();
+	}
+
 	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, BehaviorSettingKeys>>): Promise<void> {
 		this.settings = {
 			...this.settings,
@@ -172,6 +186,7 @@ export class PDFAnnotatorSettingsController {
 				widths: { ...DEFAULT_SETTINGS.toolDefaults.widths }
 			},
 			presets: DEFAULT_SETTINGS.presets.map((preset) => ({ ...preset })),
+			textColor: DEFAULT_SETTINGS.textColor,
 			preferInlineToolbar: DEFAULT_SETTINGS.preferInlineToolbar,
 			showRegionToolbarButton: DEFAULT_SETTINGS.showRegionToolbarButton,
 			showCopyEmbedToolbarButton: DEFAULT_SETTINGS.showCopyEmbedToolbarButton,

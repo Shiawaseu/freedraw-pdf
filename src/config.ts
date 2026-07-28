@@ -86,6 +86,7 @@ export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
 		widths: { ...DEFAULT_TOOL_STATE.widths }
 	},
 	presets: DEFAULT_TOOL_PRESETS.map((preset) => ({ ...preset })),
+	textColor: TEXT_COLOR_PRESETS[0].color,
 	preferInlineToolbar: true,
 	showRegionToolbarButton: false,
 	showCopyEmbedToolbarButton: false,

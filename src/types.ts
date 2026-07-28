@@ -56,6 +56,7 @@ export interface PreviewStateSnapshot {
 export interface PDFAnnotatorSettings {
 	toolDefaults: ToolStateSnapshot;
 	presets: ToolPreset[];
+	textColor: string;
 	preferInlineToolbar: boolean;
 	showRegionToolbarButton: boolean;
 	showCopyEmbedToolbarButton: boolean;

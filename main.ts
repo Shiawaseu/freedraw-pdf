@@ -511,6 +511,7 @@ class NativePdfAnnotatorSession {
 		private readonly store: AnnotationStore
 	) {
 		this.toolState = new ToolStateController(this.plugin.getStoredPresets(), this.plugin.getToolDefaults());
+		this.currentTextColor = this.plugin.getTextColor();
 	}
 
 	get currentFile(): TFile | null {
@@ -4104,8 +4105,9 @@ class NativePdfAnnotatorSession {
 		this.refreshToolbar();
 	}
 
-	private setTextColor(color: string, pushHistory = true): void {
+	private setTextColor(color: string, pushHistory = true, refreshToolbar = true): void {
 		this.currentTextColor = color;
+		this.plugin.updateTextColor(color);
 		if (this.inlineTextEditorEl) {
 			this.inlineTextEditorEl.dataset.textColor = color;
 			this.inlineTextEditorEl.setCssStyles({ color: "transparent" });
@@ -4116,7 +4118,9 @@ class NativePdfAnnotatorSession {
 		if (this.shouldApplyTextStyleToSelection()) {
 			this.applyTextColorToSelection(color, pushHistory);
 		}
-		this.refreshToolbar();
+		if (refreshToolbar) {
+			this.refreshToolbar();
+		}
 	}
 
 	private setTextBoxWidth(widthPx: number, pushHistory = true): void {
@@ -5778,10 +5782,8 @@ class NativePdfAnnotatorSession {
 		title.appendChild(this.createPopoverCloseButton(() => this.closeFontPopover()));
 		const preview = popover.createDiv({ cls: "pdf-native-annotator-font-preview", text: "The quick brown fox" });
 		const selectionSummary = popover.createDiv({ cls: "pdf-native-annotator-font-selection-summary" });
-		const colorButtons: HTMLButtonElement[] = [];
 		let fontSelect: HTMLSelectElement | null = null;
 		let sizeInput: HTMLInputElement | null = null;
-		let colorInput: HTMLInputElement | null = null;
 		const syncPopoverState = (): void => {
 			const family = this.getCurrentTextFontFamilyForMenu();
 			const size = this.getCurrentTextSizeForMenu();
@@ -5797,14 +5799,8 @@ class NativePdfAnnotatorSession {
 			if (fontSelect && fontSelect !== document.activeElement) {
 				fontSelect.value = family;
 			}
-			for (const colorButton of colorButtons) {
-				colorButton.classList.toggle("is-active", colorButton.dataset.color?.toLowerCase() === color.toLowerCase());
-			}
 			if (sizeInput && sizeInput !== document.activeElement) {
 				sizeInput.value = String(size);
-			}
-			if (colorInput && colorInput !== document.activeElement && /^#[0-9a-f]{6}$/i.test(color)) {
-				colorInput.value = color;
 			}
 		};
 		const fontRow = popover.createDiv({ cls: "pdf-native-annotator-font-select-row" });
@@ -5833,39 +5829,6 @@ class NativePdfAnnotatorSession {
 		sizeInput.addEventListener("change", () => {
 			const nextSize = clamp(Math.round(Number(sizeInput?.value ?? this.currentTextFontSize)), 8, 96);
 			this.setTextFontSize(nextSize);
-			syncPopoverState();
-		});
-		popover.createDiv({ cls: "pdf-native-annotator-font-popover-title", text: "Color" });
-		const colorList = popover.createDiv({ cls: "pdf-native-annotator-font-color-list" });
-		for (const preset of TEXT_COLOR_PRESETS) {
-			const colorButton = createEl("button");
-			colorButton.type = "button";
-			colorButton.className = "pdf-native-annotator-font-color-option";
-			colorButton.title = preset.label;
-			colorButton.dataset.color = preset.color;
-			colorButton.setCssStyles({ backgroundColor: preset.color });
-			colorButton.addEventListener("click", () => {
-				this.setTextColor(preset.color);
-				syncPopoverState();
-			});
-			colorButtons.push(colorButton);
-			colorList.appendChild(colorButton);
-		}
-		const customColorRow = popover.createDiv({ cls: "pdf-native-annotator-font-control-row" });
-		customColorRow.createSpan({ text: "Custom color" });
-		colorInput = customColorRow.createEl("input", { type: "color", cls: "pdf-native-annotator-color" });
-		colorInput.value = /^#[0-9a-f]{6}$/i.test(this.getCurrentTextColorForMenu()) ? this.getCurrentTextColorForMenu() : this.currentTextColor;
-		let colorHistoryCaptured = false;
-		colorInput.addEventListener("input", () => {
-			if (this.shouldApplyTextStyleToSelection() && !colorHistoryCaptured) {
-				this.pushHistory();
-				colorHistoryCaptured = true;
-			}
-			this.setTextColor(colorInput?.value ?? this.currentTextColor, false);
-			syncPopoverState();
-		});
-		colorInput.addEventListener("change", () => {
-			colorHistoryCaptured = false;
 			syncPopoverState();
 		});
 		popover.addEventListener("pointerdown", (event) => {
@@ -6406,13 +6369,39 @@ class NativePdfAnnotatorSession {
 		return button;
 	}
 
+	private usesTextColorControl(): boolean {
+		return this.currentTool === "text" || (
+			this.currentTool === "select" &&
+			this.selectedTargets.length > 0 &&
+			this.selectedTargets.every((target) => target.kind === "text")
+		);
+	}
+
+	private getToolbarColor(): string {
+		return this.usesTextColorControl() ? this.getCurrentTextColorForMenu() : this.currentColor;
+	}
+
+	private applyToolbarColor(color: string, pushHistory = true, refreshToolbar = true): void {
+		if (this.usesTextColorControl()) {
+			this.setTextColor(color, pushHistory, refreshToolbar);
+			return;
+		}
+		if (this.shouldApplyStyleToSelection()) {
+			this.applyColorToSelection(color, pushHistory);
+		}
+		this.setCurrentColor(color);
+		if (refreshToolbar) {
+			this.refreshToolbar();
+		}
+	}
+
 	private createColorSwatch(color: string, label: string): HTMLButtonElement {
 		const button = createEl("button");
 		button.type = "button";
 		button.className = "pdf-native-annotator-swatch";
 		button.title = label;
-		button.setAttribute("aria-label", `${label} ink`);
-		if (this.currentColor.toLowerCase() === color.toLowerCase()) {
+		button.setAttribute("aria-label", `${label} ${this.usesTextColorControl() ? "text" : "ink"}`);
+		if (this.getToolbarColor().toLowerCase() === color.toLowerCase()) {
 			button.classList.add("is-active");
 		}
 		const inner = createSpan();
@@ -6420,11 +6409,7 @@ class NativePdfAnnotatorSession {
 		inner.setCssStyles({ backgroundColor: color });
 		button.appendChild(inner);
 		this.bindToolbarButtonActivation(button, () => {
-			if (this.shouldApplyStyleToSelection()) {
-				this.applyColorToSelection(color);
-			}
-			this.setCurrentColor(color);
-			this.refreshToolbar();
+			this.applyToolbarColor(color);
 		});
 		return button;
 	}
@@ -6434,9 +6419,9 @@ class NativePdfAnnotatorSession {
 		button.type = "button";
 		button.className = "pdf-native-annotator-color-button";
 		button.title = "Choose color";
-		button.setAttribute("aria-label", "Choose ink color");
+		button.setAttribute("aria-label", this.usesTextColorControl() ? "Choose text color" : "Choose ink color");
 		const preview = button.createSpan({ cls: "pdf-native-annotator-color-button-preview" });
-		preview.setCssStyles({ backgroundColor: this.currentColor });
+		preview.setCssStyles({ backgroundColor: this.getToolbarColor() });
 		this.bindToolbarButtonActivation(button, () => {
 			this.openColorPopover(button);
 		});
@@ -6447,17 +6432,15 @@ class NativePdfAnnotatorSession {
 		this.closeTransientPopovers("color");
 		this.ensureTransientPopoverBackdrop();
 		const popover = createDiv();
-		popover.className = "modal pdf-native-annotator-color-popover";
-		const title = popover.createDiv({ cls: "pdf-native-annotator-color-popover-title", text: "Ink color" });
+		popover.className = "modal pdf-native-annotator-color-popover pdf-native-annotator-tool-color-popover";
+		const controlsTextColor = this.usesTextColorControl();
+		const title = popover.createDiv({
+			cls: "pdf-native-annotator-color-popover-title",
+			text: controlsTextColor ? "Text color" : "Ink color"
+		});
 		title.appendChild(this.createPopoverCloseButton(() => this.closeColorPopover()));
 		const swatches = popover.createDiv({ cls: "pdf-native-annotator-color-popover-swatches" });
-		for (const preset of [
-			{ color: "#ff6b57", label: "Coral" },
-			{ color: "#ffcb47", label: "Yellow" },
-			{ color: "#55b4ff", label: "Blue" },
-			{ color: "#6bcf8a", label: "Green" },
-			{ color: "#d38cff", label: "Violet" }
-		]) {
+		for (const preset of TEXT_COLOR_PRESETS) {
 			const swatch = this.createColorSwatch(preset.color, preset.label);
 			swatch.addEventListener("click", () => {
 				this.closeColorPopover();
@@ -6468,18 +6451,20 @@ class NativePdfAnnotatorSession {
 		customRow.createSpan({ text: "Custom" });
 		const colorInput = createEl("input");
 		colorInput.type = "color";
-		colorInput.value = this.currentColor;
+		colorInput.value = this.getToolbarColor();
 		colorInput.className = "pdf-native-annotator-color";
 		let historyCaptured = false;
 		colorInput.addEventListener("input", () => {
-			if (this.shouldApplyStyleToSelection()) {
+			const appliesToSelection = this.usesTextColorControl()
+				? this.shouldApplyTextStyleToSelection()
+				: this.shouldApplyStyleToSelection();
+			if (appliesToSelection) {
 				if (!historyCaptured) {
 					this.pushHistory();
 					historyCaptured = true;
 				}
-				this.applyColorToSelection(colorInput.value, false);
 			}
-			this.setCurrentColor(colorInput.value);
+			this.applyToolbarColor(colorInput.value, false, false);
 			const preview = anchor.querySelector<HTMLElement>(".pdf-native-annotator-color-button-preview");
 			if (preview) {
 				preview.setCssStyles({ backgroundColor: colorInput.value });
@@ -10733,6 +10718,10 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		return this.settingsController.getToolDefaults();
 	}
 
+	getTextColor(): string {
+		return this.settingsController.getTextColor();
+	}
+
 	shouldPreferInlineToolbar(): boolean {
 		return this.settingsController.getInlineToolbarPreference() && !this.isPdfPlusEnabled();
 	}
@@ -10883,6 +10872,10 @@ export default class PDFAnnotatorPlugin extends Plugin {
 
 	updateToolPreferences(snapshot: ToolStateSnapshot, presets: ToolPreset[]): void {
 		this.settingsController.updateToolPreferences(snapshot, presets);
+	}
+
+	updateTextColor(color: string): void {
+		this.settingsController.updateTextColor(color);
 	}
 
 	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs">>): Promise<void> {

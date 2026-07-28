@@ -1,205 +1,176 @@
 # Freedraw PDF
 
-Freedraw PDF adds a freehand annotation workspace to Obsidian's PDF workflow. It lets you draw on PDF pages, insert blank/template pages between PDF pages, copy annotated embeds into notes, and export the combined result as a finished annotated PDF.
+[![Latest release](https://img.shields.io/github/v/release/vividasasana/freedraw-pdf?style=flat-square)](https://github.com/vividasasana/freedraw-pdf/releases/latest)
+![Obsidian 1.12.0+](https://img.shields.io/badge/Obsidian-1.12.0%2B-7c3aed?style=flat-square&logo=obsidian)
+[![License: MIT](https://img.shields.io/github/license/vividasasana/freedraw-pdf?style=flat-square)](LICENSE)
 
-The plugin is designed for people who read, mark up, and study PDFs inside Obsidian and want handwritten notes to stay with the vault instead of living in a separate annotation app.
+Freedraw PDF is a freehand PDF annotation workspace for Obsidian. Draw directly over PDFs, add mixed-media annotations and template pages, embed annotated pages in notes, and export a finished PDF without modifying the source document.
 
-## Main Features
+![Freedraw PDF annotation toolbar and rendered Markdown embed](docs/images/freedraw-pdf-annotated-embed-demo.png)
 
-- Draw on PDF pages with pen and highlighter tools.
-- Add text boxes, shapes, and images to PDF pages or inserted blank/template pages.
-- Select, move, resize, duplicate, reorder, copy, cut, paste, and delete annotations.
-- Erase contacted annotations without recalculating or fragmenting surviving strokes.
-- Insert temporary blank/template pages before, after, or at the end of PDF documents.
-- Choose inserted page templates, paper sizes, and paper colors.
-- Export PDF pages, inserted pages, and annotations as one flattened PDF.
-- Copy annotated page and selected-region embeds into Markdown notes with `freedraw-pdf` code blocks.
-- Keep annotation data in vault-backed sidecar files instead of overwriting the source PDF.
+The annotation workspace is shown on the left; the same annotated content is rendered as a live Markdown embed on the right.
+
+## Highlights
+
+- **Natural ink:** pressure-aware pen and highlighter tools powered by [perfect-freehand](https://github.com/steveruizok/perfect-freehand).
+- **Complete annotation toolkit:** freehand ink, highlights, text boxes, rectangles, ellipses, lines, and images.
+- **Non-destructive workflow:** annotations are stored in vault-backed sidecar files; the source PDF remains unchanged.
+- **Flexible erasing:** object and segment eraser modes remove contacted annotations without recalculating surviving strokes.
+- **Selection tools:** move, resize, duplicate, reorder, copy, cut, paste, and delete annotations.
+- **Template pages:** insert blank, ruled, grid, or dotted pages between PDF pages.
+- **Markdown integration:** embed a full annotated page or a selected region inside a note.
+- **PDF export:** combine source pages, inserted pages, and annotations into one flattened PDF.
+
+## Quick Start
+
+1. Open a PDF in Obsidian.
+2. Choose **Annotate** from the PDF toolbar, ribbon, or command palette.
+3. Draw, highlight, add text or shapes, insert images, or add template pages.
+4. Choose **Finish** to return to reading mode.
+5. Use the overflow menu to copy an annotated embed, export the current page, or export the complete annotated PDF.
+
+Freedraw PDF uses Obsidian's native PDF toolbar when available and falls back to a floating toolbar when necessary.
+
+## Tools
+
+| Tool | Purpose |
+| --- | --- |
+| Pen | Pressure-aware handwriting and freehand drawing with independent color and width presets. |
+| Highlighter | Translucent emphasis with settings separate from the pen. |
+| Eraser | Remove complete contacted objects or erase along a path. |
+| Text | Add movable, resizable text boxes with independent font and color settings. |
+| Shapes | Add rectangles, ellipses, and straight lines. |
+| Image | Place a vault-backed image on the current page. |
+| Select | Move, resize, reorder, duplicate, copy, cut, paste, or delete annotations. |
+
+## Annotated Markdown Embeds
+
+Freedraw PDF can insert a live annotated page or selected region into a Markdown note. The generated block references the PDF, page, optional crop rectangle, and display width:
+
+````markdown
+```freedraw-pdf
+path: Documents/example.pdf
+page: 1
+width: 720
+```
+````
+
+The rendered embed follows the current sidecar annotation data. Optional embed controls can open the source page, refresh the rendering, or copy the block.
+
+## Template Pages
+
+Add temporary writing pages before, after, or at the end of the current PDF. Available options include:
+
+- Blank, ruled, grid, and dotted templates.
+- A4, letter, compact, and long page sizes.
+- Configurable paper colors.
+- Page duplication with or without annotations.
+- Export alongside the original PDF pages.
+
+Template pages remain editable during annotation and become regular flattened pages in an exported PDF.
 
 ## Installation
 
-### From Obsidian Community Plugins
+### GitHub Release
 
-After the plugin is accepted into the Obsidian community directory:
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/vividasasana/freedraw-pdf/releases/latest).
+2. Create the following directory inside your vault:
 
-1. Open Obsidian settings.
-2. Go to **Community plugins**.
-3. Search for **Freedraw PDF**.
-4. Install and enable the plugin.
+   ```text
+   .obsidian/plugins/freedraw-pdf
+   ```
 
-### Manual Install
-
-1. Download these files from the latest GitHub release:
-   - `manifest.json`
-   - `main.js`
-   - `styles.css`
-2. Create this folder in your vault:
-
-```text
-.obsidian/plugins/freedraw-pdf
-```
-
-3. Place the three downloaded files in that folder.
+3. Place the three downloaded files in that directory.
 4. Reload Obsidian.
-5. Enable **Freedraw PDF** in **Community plugins**.
+5. Open **Settings → Community plugins** and enable **Freedraw PDF**.
 
-## Basic Workflow
+### Community Plugins
 
-1. Open a PDF in Obsidian.
-2. Enable Freedraw PDF annotation mode from the command palette, ribbon, or PDF controls.
-3. Draw, highlight, add text, add shapes, insert images, or add blank/template pages.
-4. Use the page actions to navigate, duplicate, clear, or remove added pages.
-5. Copy Markdown embeds when you want annotated PDF content inside a note.
-6. Export an annotated mixed PDF when you need a finished document.
+After Freedraw PDF is listed in Obsidian's community plugin directory:
 
-## Annotation Tools
-
-### Pen
-
-Use the pen tool for freehand writing and drawing. Strokes are smoothed with `perfect-freehand` and can use simulated pressure or stylus pressure, depending on your settings and device support.
-
-### Highlighter
-
-Use the highlighter for translucent emphasis over PDF content. Highlighter width and color can be adjusted separately from the pen defaults.
-
-### Eraser
-
-Use the eraser to remove annotation marks. Object mode removes complete contacted objects, while segment mode follows the eraser path without manufacturing or replaying fragmented survivor strokes.
-
-### Select
-
-Use select mode to click or drag around annotations. Selected annotations can be moved, resized, duplicated, reordered, copied, cut, pasted, or deleted.
-
-### Shapes
-
-Add simple visual markers such as rectangles, ellipses, and lines. Shapes are useful for boxing content, calling out diagrams, or marking regions for review.
-
-### Text
-
-Add text boxes directly onto PDF pages or inserted blank/template pages. Text boxes can be positioned and resized like other annotation objects.
-
-### Images
-
-Insert an image onto the current page through the file picker. The selected image is copied into your vault and then used as an annotation item.
-
-## Inserted Pages
-
-Freedraw PDF can insert temporary blank/template pages into the active PDF session. These pages appear between PDF pages while you work and are included when you export the mixed document.
-
-Inserted page options include:
-
-- Blank, ruled, grid, and dot templates.
-- A4, letter, compact, and long page sizes.
-- Paper color presets.
-- Insert before the current PDF page.
-- Insert after the current PDF page.
-- Add a page to the end of the document.
-- Duplicate an added page with or without its annotations.
-- Clear or delete added pages from the current session.
-
-## Markdown Embeds
-
-Freedraw PDF can copy annotated page references into Markdown notes using explicit `freedraw-pdf` code blocks.
-
-Use embeds when you want a note to show:
-
-- A full annotated PDF page.
-- A selected region from a PDF page.
-- A refreshed view of current annotation data.
-- A block that can be copied, opened, or refreshed from the rendered note.
-
-The embed feature is useful for study notes, research summaries, lecture notes, and review documents where the annotated PDF page should appear next to your written notes.
-
-## Export
-
-The export action creates a new flattened PDF that combines:
-
-- Original PDF pages.
-- Inserted blank/template pages.
-- Freehand strokes.
-- Highlights.
-- Text boxes.
-- Shapes.
-- Images.
-
-The source PDF is not edited in place. Export creates a separate finished PDF intended for sharing, archiving, or printing.
-
-## How Data Is Stored
-
-Freedraw PDF keeps annotation data in vault-backed sidecar JSON files. The source PDF remains unchanged while you annotate it.
-
-This means:
-
-- Your original PDF remains available.
-- Your annotations stay inside your Obsidian vault.
-- You can choose when to create a flattened PDF export.
-- Annotation data can be backed up with the rest of your vault.
+1. Open **Settings → Community plugins → Browse**.
+2. Search for **Freedraw PDF**.
+3. Select **Install**, then **Enable**.
 
 ## Settings
 
-The settings tab lets you tune workflow and rendering behavior:
+The settings tab provides controls for:
 
-- Prefer Obsidian's native PDF toolbar or use the fallback floating toolbar.
-- Show or hide region and copy-embed toolbar buttons.
-- Show or hide headers on rendered annotated embeds.
-- Choose which pointer inputs can draw.
-- Configure simulated or stylus pressure.
-- Tune ink thinning, streamline, smoothing, easing, and taper.
-- Set autosave delay.
-- Set default pen, highlighter, and eraser widths.
+- Native or floating toolbar placement.
+- Pen, highlighter, and eraser defaults.
+- Mouse, stylus, and touch input policy.
+- Simulated or hardware stylus pressure.
+- Ink thinning, streamline, smoothing, easing, and taper.
+- Fast or high-quality live stroke previews.
+- Autosave timing.
+- Optional region, embed, notice, and rendering diagnostic controls.
 
-## Privacy And Permissions
+## Storage and Export
 
-- No account, payment, network service, ads, telemetry, or self-update mechanism is required.
-- Annotation files, copied embeds, imported images, and exported PDFs are written inside your Obsidian vault.
-- Inserting an image uses the browser file picker. The plugin only reads the image file you choose, then stores a vault copy for the annotation.
+Annotation data is stored in JSON sidecar files within the vault. Imported annotation images are also copied into the vault. Freedraw PDF does not overwrite the source PDF while editing.
 
-## Notes And Limitations
+Export creates a separate flattened PDF containing:
 
-- The plugin depends on Obsidian's native PDF viewer structure, so some behavior may need updates when Obsidian changes its PDF internals.
-- Source PDFs are not edited in place during annotation.
-- Exported PDFs are flattened output files intended for sharing or archiving.
-- The plugin is still early and should be tested with copies of important documents until your workflow is comfortable.
+- Original PDF pages.
+- Added template pages.
+- Pen and highlighter strokes.
+- Text, shapes, and images.
+
+Use the exported file for sharing, printing, or archiving while retaining editable sidecar data in the vault.
+
+## Compatibility
+
+- Obsidian `1.12.0` or later.
+- Windows, macOS, Linux, iOS, iPadOS, and Android, subject to Obsidian's native PDF viewer and device input support.
+- Mouse, stylus, and configurable touch input.
+
+The plugin integrates with Obsidian's native PDF viewer internals. A future Obsidian PDF viewer update may require a corresponding plugin update.
+
+## Privacy
+
+Freedraw PDF does not require an account, payment, analytics service, or network connection. PDFs, annotations, imported images, embeds, and exports remain in the vault unless you choose to share them.
 
 ## Troubleshooting
 
-- If toolbar controls do not appear, try toggling the native PDF toolbar preference in settings.
-- If touch input draws unexpectedly, change the ink input mode to keep fingers available for scrolling.
-- If annotation data does not appear, confirm that the PDF and its sidecar annotation file are still in the expected vault location.
-- If an export looks different from the live view, update the plugin and retry with a copy of the source PDF.
+- **Toolbar missing:** toggle **Prefer native PDF toolbar** in the plugin settings.
+- **Touch draws while scrolling:** change **Ink input mode** to exclude touch input.
+- **Annotations missing:** confirm the PDF and its sidecar file remain in their original vault locations.
+- **Export differs from the live view:** update to the latest release and retry with a copy of the source PDF.
 
-## Support
-
-Use GitHub issues to report bugs, request improvements, or ask questions about the plugin. For security-sensitive reports, follow the guidance in `SECURITY.md`.
+Report reproducible problems through [GitHub Issues](https://github.com/vividasasana/freedraw-pdf/issues). Include the Obsidian version, plugin version, operating system, input device, and reproduction steps.
 
 ## Development
 
-```powershell
+Requirements:
+
+- Node.js 18 or later.
+- npm.
+
+```bash
+git clone https://github.com/vividasasana/freedraw-pdf.git
+cd freedraw-pdf
 npm install
 npm run check
 npm run build
 ```
 
-## Release
+Useful commands:
 
-The GitHub release tag must exactly match `manifest.json` and `versions.json`. For example:
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Build in watch mode. |
+| `npm run build` | Create a production `main.js` bundle. |
+| `npm run check` | Run the complete regression verifier suite. |
+| `npm run deploy:test` | Build, verify, and deploy to the configured test vault. |
+| `npm run package` | Build, verify, and package release assets. |
 
-```text
-0.12.4
-```
+## Support and Security
 
-Release assets should include only:
-
-```text
-manifest.json
-main.js
-styles.css
-```
+- Use [GitHub Issues](https://github.com/vividasasana/freedraw-pdf/issues) for bug reports and feature requests.
+- Follow [SECURITY.md](SECURITY.md) for security-sensitive reports.
 
 ## License
 
-MIT
+Freedraw PDF is available under the [MIT License](LICENSE).
 
-## Credits
-
-- [perfect-freehand](https://github.com/steveruizok/perfect-freehand), used for freehand stroke rendering, is licensed under MIT.
+Freehand stroke rendering uses [perfect-freehand](https://github.com/steveruizok/perfect-freehand), also licensed under MIT.
