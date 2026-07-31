@@ -40,7 +40,14 @@ function getCoordinatePairCount(pathData) {
 try {
 	const source = fs.readFileSync(path.join(projectRoot, "src", "ink", "inkEngine.ts"), "utf8");
 	const mainSource = fs.readFileSync(path.join(projectRoot, "main.ts"), "utf8");
-	assert(source.includes("simulatePressure: !effectiveUsePressure"), "perfect-freehand must preserve the release pressure behavior for simulated pressure mode");
+	const configSource = fs.readFileSync(path.join(projectRoot, "src", "config.ts"), "utf8");
+	const settingsSource = fs.readFileSync(path.join(projectRoot, "src", "settings", "settingTab.ts"), "utf8");
+	assert(source.includes("simulatePressure: false"), "perfect-freehand must render the pressure captured with each stable stroke point");
+	assert(source.includes("const effectiveUsePressure = usePressure;"), "stored stylus or simulated pressure must reach perfect-freehand");
+	assert(source.includes("taper: options.startTaper ?? settings.taperStart"), "eraser-cut starts must be able to suppress artificial tapering");
+	assert(source.includes("taper: options.endTaper ?? settings.taperEnd"), "eraser-cut ends must be able to suppress artificial tapering");
+	assert(mainSource.includes("startTaper: stroke.cutStart ? 0 : undefined"), "cut stroke starts must render as stable rounded ends");
+	assert(mainSource.includes("endTaper: stroke.cutEnd ? 0 : undefined"), "cut stroke ends must render as stable rounded ends");
 	assert(
 		mainSource.includes("this.drawTransientPageAnnotations(pageNumber, true);"),
 		"stroke commit must replace the retained live preview with canonical geometry"
@@ -65,6 +72,26 @@ try {
 		!source.includes("new Path2D(") && !mainSource.includes("new Path2D("),
 		"ink rendering must not depend on Electron Path2D SVG parsing"
 	);
+	const configTranspiled = ts.transpileModule(configSource, {
+		compilerOptions: {
+			module: ts.ModuleKind.CommonJS,
+			target: ts.ScriptTarget.ES2018,
+			skipLibCheck: true
+		}
+	});
+	const configModule = { exports: {} };
+	vm.runInNewContext(configTranspiled.outputText, {
+		require,
+		module: configModule,
+		exports: configModule.exports
+	}, { filename: "config.check.cjs" });
+	const widthRanges = configModule.exports.TOOL_WIDTH_RANGES;
+	assert(widthRanges.pen.max === 48, "pen width range did not expand to 48 px");
+	assert(widthRanges.highlighter.max === 64, "highlighter width range did not expand to 64 px");
+	assert(widthRanges.eraser.max === 80, "eraser width range did not expand to 80 px");
+	assert(configModule.exports.clampToolWidth("pen", 100) === 48, "pen width state is not clamped to the shared maximum");
+	assert(mainSource.includes("const widthRange = this.getWidthRange(targetTool);"), "toolbar width slider does not use shared ranges");
+	assert(settingsSource.includes("TOOL_WIDTH_RANGES.pen.max"), "settings UI does not use the expanded pen range");
 	const transpiled = ts.transpileModule(source, {
 		compilerOptions: {
 			module: ts.ModuleKind.CommonJS,
@@ -81,6 +108,7 @@ try {
 		console
 	}, { filename: "inkEngine.check.cjs" });
 	const ink = moduleShim.exports;
+	ink.setInkRenderSettings({ pressureMode: "auto", thinning: 0.5 });
 	const stroke = { widthScale: 8 / 1600, points: [] };
 	for (const point of createStrokeSamples()) {
 		ink.appendStrokePoints(stroke, [point]);
@@ -89,6 +117,18 @@ try {
 	assert(stroke.points.length >= 72, `appendStrokePoints over-compressed handwriting samples (${stroke.points.length})`);
 	assert(stroke.points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.pressure)), "stroke contains non-finite point data");
 	assert(stroke.points.every((point) => point.pressure >= 0.06 && point.pressure <= 1), "stroke pressure escaped expected range");
+
+	const pressureLine = (pressure) => Array.from({ length: 24 }, (_, index) => ({
+		x: 0.1 + (index * 0.03),
+		y: 0.5,
+		pressure,
+		t: index * 8
+	}));
+	const lightOutline = ink.getSmoothInkStrokeOutline(pressureLine(0.14), 1000, 1000, 12, true, false, { renderMode: "committed" });
+	const firmOutline = ink.getSmoothInkStrokeOutline(pressureLine(0.9), 1000, 1000, 12, true, false, { renderMode: "committed" });
+	const outlineHeight = (outline) => Math.max(...outline.map((point) => point[1])) - Math.min(...outline.map((point) => point[1]));
+	assert(lightOutline && firmOutline, "pressure comparison outlines were not generated");
+	assert(outlineHeight(firmOutline) > outlineHeight(lightOutline) * 1.35, "stored pressure does not visibly change stroke width");
 
 	const committedPath = ink.getSmoothInkStrokePath(stroke.points, 1600, 2200, 8, true, false, { renderMode: "committed" });
 	const livePath = ink.getSmoothInkStrokePath(stroke.points, 1600, 2200, 8, true, true, { renderMode: "live" });

@@ -20,6 +20,18 @@ export const TOOLBAR_SELECTORS = [
 	".pdf-toolbar"
 ].join(", ");
 
+export const TOOL_WIDTH_RANGES: Record<ToolPresetKind, { min: number; max: number; step: number }> = {
+	pen: { min: 1, max: 48, step: 0.5 },
+	highlighter: { min: 4, max: 64, step: 0.5 },
+	eraser: { min: 4, max: 80, step: 1 }
+};
+
+export function clampToolWidth(kind: ToolPresetKind, width: number): number {
+	const range = TOOL_WIDTH_RANGES[kind];
+	const finiteWidth = Number.isFinite(width) ? width : DEFAULT_TOOL_STATE.widths[kind];
+	return Math.max(range.min, Math.min(range.max, finiteWidth));
+}
+
 export const DEFAULT_TOOL_PRESETS: ToolPreset[] = [
 	{ id: "pen-slot-1", label: "Pen 1", kind: "pen", color: "#ff6b57", width: 3, opacity: 0.96 },
 	{ id: "pen-slot-2", label: "Pen 2", kind: "pen", color: "#55b4ff", width: 5, opacity: 0.96 },
@@ -80,6 +92,7 @@ export const DEFAULT_TOOL_STATE: ToolStateSnapshot = {
 };
 
 export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
+	pressureCaptureVersion: 1,
 	toolDefaults: {
 		...DEFAULT_TOOL_STATE,
 		selectedPresetIds: { ...(DEFAULT_TOOL_STATE.selectedPresetIds ?? {}) },
@@ -90,6 +103,7 @@ export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
 	preferInlineToolbar: true,
 	showRegionToolbarButton: false,
 	showCopyEmbedToolbarButton: false,
+	autoCopyRegionEmbed: true,
 	showAnnotatedEmbedHeader: false,
 	showDrawingNotices: true,
 	showRenderTelemetry: false,
@@ -102,7 +116,7 @@ export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
 		easing: "linear",
 		taperStart: 0,
 		taperEnd: 0,
-		pressureMode: "simulate"
+		pressureMode: "auto"
 	},
 	autosaveDelayMs: 600
 };
@@ -119,7 +133,7 @@ export function normalizeToolPresets(presets: ToolPreset[] | undefined): ToolPre
 			normalized.push({
 				...fallback,
 				color: stored?.color ?? fallback.color,
-				width: typeof stored?.width === "number" ? stored.width : fallback.width,
+				width: clampToolWidth(kind, typeof stored?.width === "number" ? stored.width : fallback.width),
 				opacity: typeof stored?.opacity === "number" ? stored.opacity : fallback.opacity
 			});
 		}

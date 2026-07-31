@@ -1,6 +1,6 @@
 import { App, Notice, TFile } from "obsidian";
 import { renderAnnotationDocumentPage, renderAnnotationDocumentPageImages } from "../markdown/embedRender";
-import { getNotebookPageRenderDimensions } from "../notebook/pageModel";
+import { getNotebookPageRenderDimensions, hasEditableNativePageTemplates } from "../notebook/pageModel";
 import { drawTemplatePageBackground } from "../notebook/templateCanvas";
 import { getNativePdfJs, type NativePdfDocument } from "../pdf/nativePdfJs";
 import { dataUrlToArrayBuffer, getBaseName } from "../utils/general";
@@ -66,7 +66,7 @@ async function renderSyntheticPageToCanvas(annotationDocument: AnnotationDocumen
 	return canvas;
 }
 
-async function renderPdfPageToCanvas(pdfDocument: NativePdfDocument, annotationDocument: AnnotationDocument, pageNumber: number, includeAnnotations: boolean): Promise<HTMLCanvasElement> {
+async function renderPdfPageToCanvas(pdfDocument: NativePdfDocument, annotationDocument: AnnotationDocument, pageNumber: number, realPdfPageCount: number, includeAnnotations: boolean): Promise<HTMLCanvasElement> {
 	const pdfPage = await pdfDocument.getPage(pageNumber);
 	const baseViewport = pdfPage.getViewport({ scale: 1 });
 	const scale = EXPORT_PAGE_WIDTH_PX / Math.max(baseViewport.width, 1);
@@ -81,7 +81,9 @@ async function renderPdfPageToCanvas(pdfDocument: NativePdfDocument, annotationD
 	context.fillStyle = "#ffffff";
 	context.fillRect(0, 0, canvas.width, canvas.height);
 	await pdfPage.render({ canvasContext: context, viewport }).promise;
-	const pageTemplate = annotationDocument.pdfPageTemplates?.find((template) => template.page === pageNumber);
+	const pageTemplate = hasEditableNativePageTemplates(annotationDocument, realPdfPageCount)
+		? annotationDocument.pdfPageTemplates?.find((template) => template.page === pageNumber)
+		: null;
 	if (pageTemplate) {
 		drawTemplatePageBackground(context, canvas.width, canvas.height, {
 			id: `pdf-template-${pageNumber}`,
@@ -126,7 +128,7 @@ async function renderMixedPagesToPdfBytes(
 		const pageMap = new Map<number, number>();
 		for (const entry of mixedEntries) {
 			const canvas = entry.pageNumber <= pdfDocument.numPages
-				? await renderPdfPageToCanvas(pdfDocument, annotationDocument, entry.pageNumber, includeAnnotations)
+				? await renderPdfPageToCanvas(pdfDocument, annotationDocument, entry.pageNumber, realPdfPageCount, includeAnnotations)
 				: await renderSyntheticPageToCanvas(annotationDocument, entry.pageNumber, realPdfPageCount, includeAnnotations);
 			pages.push(canvasToJpegPage(canvas));
 			pageMap.set(entry.pageNumber, pages.length);

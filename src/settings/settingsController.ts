@@ -1,12 +1,13 @@
-import { DEFAULT_SETTINGS, normalizeToolPresets } from "../config";
+import { DEFAULT_SETTINGS, clampToolWidth, normalizeToolPresets } from "../config";
 import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
-type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs";
+type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs";
 
 function normalizeInkInputPolicy(value: unknown): InkInputPolicy {
-	return value === "pen-mouse-only" || value === "allow-touch" || value === "pen-mouse-stylus-touch"
-		? value
-		: DEFAULT_SETTINGS.inkInputPolicy;
+	if (value === "pen-mouse-stylus-touch") {
+		return "allow-touch";
+	}
+	return value === "pen-mouse-only" || value === "allow-touch" ? value : DEFAULT_SETTINGS.inkInputPolicy;
 }
 
 function normalizeLivePreviewMode(value: unknown): LivePreviewMode {
@@ -24,7 +25,9 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
 }
 
 function normalizeInkPressureMode(value: unknown): InkPressureMode {
-	return value === "stylus" || value === "simulate" ? value : DEFAULT_SETTINGS.inkRenderSettings.pressureMode;
+	return value === "auto" || value === "stylus" || value === "simulate"
+		? value
+		: DEFAULT_SETTINGS.inkRenderSettings.pressureMode;
 }
 
 function normalizeInkEasingMode(value: unknown): InkEasingMode {
@@ -59,8 +62,15 @@ export class PDFAnnotatorSettingsController {
 	async load(): Promise<void> {
 		const loaded = await this.loadData() as Partial<PDFAnnotatorSettings> | null | undefined;
 		const toolDefaults: Partial<ToolStateSnapshot> = loaded?.toolDefaults ?? {};
+		const loadedWidths = toolDefaults.widths;
 		const normalizedPresets = normalizeToolPresets(loaded?.presets);
+		const shouldMigrateLegacyPressure = loaded?.pressureCaptureVersion !== 1;
+		const inkRenderSettings = normalizeInkRenderSettings(loaded?.inkRenderSettings);
+		if (shouldMigrateLegacyPressure && inkRenderSettings.pressureMode === "simulate") {
+			inkRenderSettings.pressureMode = "auto";
+		}
 		this.settings = {
+			pressureCaptureVersion: 1,
 			toolDefaults: {
 				...DEFAULT_SETTINGS.toolDefaults,
 				...toolDefaults,
@@ -69,8 +79,9 @@ export class PDFAnnotatorSettingsController {
 					...(toolDefaults.selectedPresetIds ?? {})
 				},
 				widths: {
-					...DEFAULT_SETTINGS.toolDefaults.widths,
-					...(toolDefaults.widths ?? {})
+					pen: clampToolWidth("pen", loadedWidths?.pen ?? DEFAULT_SETTINGS.toolDefaults.widths.pen),
+					highlighter: clampToolWidth("highlighter", loadedWidths?.highlighter ?? DEFAULT_SETTINGS.toolDefaults.widths.highlighter),
+					eraser: clampToolWidth("eraser", loadedWidths?.eraser ?? DEFAULT_SETTINGS.toolDefaults.widths.eraser)
 				}
 			},
 			presets: normalizedPresets,
@@ -78,15 +89,16 @@ export class PDFAnnotatorSettingsController {
 			preferInlineToolbar: typeof loaded?.preferInlineToolbar === "boolean" ? loaded.preferInlineToolbar : DEFAULT_SETTINGS.preferInlineToolbar,
 			showRegionToolbarButton: typeof loaded?.showRegionToolbarButton === "boolean" ? loaded.showRegionToolbarButton : DEFAULT_SETTINGS.showRegionToolbarButton,
 			showCopyEmbedToolbarButton: typeof loaded?.showCopyEmbedToolbarButton === "boolean" ? loaded.showCopyEmbedToolbarButton : DEFAULT_SETTINGS.showCopyEmbedToolbarButton,
+			autoCopyRegionEmbed: typeof loaded?.autoCopyRegionEmbed === "boolean" ? loaded.autoCopyRegionEmbed : DEFAULT_SETTINGS.autoCopyRegionEmbed,
 			showAnnotatedEmbedHeader: typeof loaded?.showAnnotatedEmbedHeader === "boolean" ? loaded.showAnnotatedEmbedHeader : DEFAULT_SETTINGS.showAnnotatedEmbedHeader,
 			showDrawingNotices: typeof loaded?.showDrawingNotices === "boolean" ? loaded.showDrawingNotices : DEFAULT_SETTINGS.showDrawingNotices,
 			showRenderTelemetry: typeof loaded?.showRenderTelemetry === "boolean" ? loaded.showRenderTelemetry : DEFAULT_SETTINGS.showRenderTelemetry,
 			inkInputPolicy: normalizeInkInputPolicy(loaded?.inkInputPolicy),
 			livePreviewMode: normalizeLivePreviewMode(loaded?.livePreviewMode),
-			inkRenderSettings: normalizeInkRenderSettings(loaded?.inkRenderSettings),
+			inkRenderSettings,
 			autosaveDelayMs: typeof loaded?.autosaveDelayMs === "number" ? loaded.autosaveDelayMs : DEFAULT_SETTINGS.autosaveDelayMs
 		};
-		if (JSON.stringify(loaded?.presets ?? []) !== JSON.stringify(normalizedPresets)) {
+		if (shouldMigrateLegacyPressure || JSON.stringify(loaded?.presets ?? []) !== JSON.stringify(normalizedPresets)) {
 			this.scheduleSave();
 		}
 	}
@@ -126,6 +138,10 @@ export class PDFAnnotatorSettingsController {
 		return this.settings.showCopyEmbedToolbarButton;
 	}
 
+	shouldAutoCopyRegionEmbed(): boolean {
+		return this.settings.autoCopyRegionEmbed;
+	}
+
 	shouldShowAnnotatedEmbedHeader(): boolean {
 		return this.settings.showAnnotatedEmbedHeader;
 	}
@@ -158,9 +174,13 @@ export class PDFAnnotatorSettingsController {
 		this.settings.toolDefaults = {
 			...snapshot,
 			selectedPresetIds: { ...(snapshot.selectedPresetIds ?? {}) },
-			widths: { ...snapshot.widths }
+			widths: {
+				pen: clampToolWidth("pen", snapshot.widths.pen),
+				highlighter: clampToolWidth("highlighter", snapshot.widths.highlighter),
+				eraser: clampToolWidth("eraser", snapshot.widths.eraser)
+			}
 		};
-		this.settings.presets = presets.map((preset) => ({ ...preset }));
+		this.settings.presets = normalizeToolPresets(presets);
 		this.scheduleSave();
 	}
 
@@ -180,6 +200,7 @@ export class PDFAnnotatorSettingsController {
 
 	private createDefaultSettings(): PDFAnnotatorSettings {
 		return {
+			pressureCaptureVersion: DEFAULT_SETTINGS.pressureCaptureVersion,
 			toolDefaults: {
 				...DEFAULT_SETTINGS.toolDefaults,
 				selectedPresetIds: { ...(DEFAULT_SETTINGS.toolDefaults.selectedPresetIds ?? {}) },
@@ -190,6 +211,7 @@ export class PDFAnnotatorSettingsController {
 			preferInlineToolbar: DEFAULT_SETTINGS.preferInlineToolbar,
 			showRegionToolbarButton: DEFAULT_SETTINGS.showRegionToolbarButton,
 			showCopyEmbedToolbarButton: DEFAULT_SETTINGS.showCopyEmbedToolbarButton,
+			autoCopyRegionEmbed: DEFAULT_SETTINGS.autoCopyRegionEmbed,
 			showAnnotatedEmbedHeader: DEFAULT_SETTINGS.showAnnotatedEmbedHeader,
 			showDrawingNotices: DEFAULT_SETTINGS.showDrawingNotices,
 			showRenderTelemetry: DEFAULT_SETTINGS.showRenderTelemetry,

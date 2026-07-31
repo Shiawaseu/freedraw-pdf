@@ -69,6 +69,8 @@ Add temporary writing pages before, after, or at the end of the current PDF. Ava
 
 Template pages remain editable during annotation and become regular flattened pages in an exported PDF.
 
+Use **Pages** to search, open, rename, duplicate, restyle, clear, or remove pages. Removed PDF pages keep their annotations and removed template pages keep both their page settings and annotations. Restore them from the **Removed** filter, or permanently delete a removed template page when it is no longer needed.
+
 ## Installation
 
 ### GitHub Release
@@ -132,8 +134,8 @@ Freedraw PDF does not require an account, payment, analytics service, or network
 
 ## Troubleshooting
 
-- **Toolbar missing:** toggle **Prefer native PDF toolbar** in the plugin settings.
-- **Touch draws while scrolling:** change **Ink input mode** to exclude touch input.
+- **Toolbar missing:** set **Toolbar placement** to **Inside PDF toolbar** in the plugin settings.
+- **Touch draws while scrolling:** set **Finger input** to **Pan with finger**.
 - **Annotations missing:** confirm the PDF and its sidecar file remain in their original vault locations.
 - **Export differs from the live view:** update to the latest release and retry with a copy of the source PDF.
 

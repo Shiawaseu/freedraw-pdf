@@ -1,4 +1,4 @@
-import { DEFAULT_TOOL_PRESETS, DEFAULT_TOOL_STATE } from "../config";
+import { DEFAULT_TOOL_PRESETS, DEFAULT_TOOL_STATE, clampToolWidth } from "../config";
 import type {
 	AnnotationTool,
 	EraserMode,
@@ -33,6 +33,11 @@ export class ToolStateController {
 				...DEFAULT_TOOL_STATE.widths,
 				...(initialState?.widths ?? {})
 			}
+		};
+		this.state.widths = {
+			pen: clampToolWidth("pen", this.state.widths.pen),
+			highlighter: clampToolWidth("highlighter", this.state.widths.highlighter),
+			eraser: clampToolWidth("eraser", this.state.widths.eraser)
 		};
 		if (this.state.selectionMode !== "single" && this.state.selectionMode !== "box" && this.state.selectionMode !== "lasso") {
 			this.state.selectionMode = "single";
@@ -180,16 +185,16 @@ export class ToolStateController {
 	setWidth(width: number, tool = this.state.activeTool): void {
 		const targetTool = isShapeTool(tool) ? "pen" : tool;
 		if (targetTool === "highlighter") {
-			this.state.widths.highlighter = width;
+			this.state.widths.highlighter = clampToolWidth("highlighter", width);
 			this.syncSelectedPreset();
 			return;
 		}
 		if (targetTool === "eraser") {
-			this.state.widths.eraser = width;
+			this.state.widths.eraser = clampToolWidth("eraser", width);
 			this.syncSelectedPreset();
 			return;
 		}
-		this.state.widths.pen = width;
+		this.state.widths.pen = clampToolWidth("pen", width);
 		this.syncSelectedPreset();
 	}
 

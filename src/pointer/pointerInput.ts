@@ -1,7 +1,7 @@
-import { calculateVelocity, estimatePressureFromVelocity, getInputMethod, isTabletStylusEvent, isTabletWebKitTouchDevice } from "../utils/deviceUtils";
+import { calculateVelocity, estimatePressureFromVelocity, getInputMethod, isTabletWebKitTouchDevice } from "../utils/deviceUtils";
 import { clamp } from "../utils/general";
 import { isShapeTool } from "../tools/toolState";
-import type { AnnotationTool, InkInputPolicy } from "../types";
+import type { AnnotationTool, InkInputPolicy, InkPressureMode } from "../types";
 
 export function isInkDrawingTool(tool: AnnotationTool): boolean {
 	return tool === "pen" || tool === "highlighter" || tool === "eraser" || isShapeTool(tool);
@@ -37,6 +37,27 @@ export function shouldIgnoreInkPointerEvent(
 	return true;
 }
 
+export function shouldCaptureInkPointerEvent(
+	event: PointerEvent,
+	tool: AnnotationTool,
+	policy: InkInputPolicy = "pen-mouse-stylus-touch"
+): boolean {
+	return event.pointerType === "pen" &&
+		isInkDrawingTool(tool) &&
+		!shouldIgnoreInkPointerEvent(event, tool, policy);
+}
+
+export function shouldPanInkPointerEvent(
+	event: PointerEvent,
+	tool: AnnotationTool,
+	policy: InkInputPolicy = "pen-mouse-stylus-touch"
+): boolean {
+	return event.pointerType === "touch" &&
+		event.isPrimary !== false &&
+		isInkDrawingTool(tool) &&
+		policy === "pen-mouse-only";
+}
+
 function hasStylusLikePressure(event: PointerEvent): boolean {
 	const webkitForce = (event as PointerEvent & { webkitForce?: number }).webkitForce;
 	if (typeof webkitForce === "number" && webkitForce > 0.01) {
@@ -51,7 +72,7 @@ function hasStylusLikePressure(event: PointerEvent): boolean {
 }
 
 export function getCoalescedPointerEvents(event: PointerEvent): PointerEvent[] {
-	if (event.pointerType === "touch" && typeof event.getCoalescedEvents === "function") {
+	if ((event.pointerType === "touch" || event.pointerType === "pen") && typeof event.getCoalescedEvents === "function") {
 		const samples = event.getCoalescedEvents();
 		if (samples.length > 0) {
 			const last = samples[samples.length - 1];
@@ -67,9 +88,12 @@ export function getCoalescedPointerEvents(event: PointerEvent): PointerEvent[] {
 export function resolvePointerPressure(
 	event: PointerEvent,
 	lastPoint: { clientX: number; clientY: number } | null,
-	lastPointTime: number
+	lastPointTime: number,
+	pressureMode: InkPressureMode = "auto"
 ): number {
-	if (isTabletStylusEvent(event)) {
+	const inputMethod = getInputMethod(event);
+	const useReportedPressure = pressureMode !== "simulate" && inputMethod === "pen";
+	if (useReportedPressure) {
 		if (event.pressure > 0) {
 			return clamp(event.pressure, 0.06, 1);
 		}
@@ -78,21 +102,18 @@ export function resolvePointerPressure(
 			return clamp(webkitForce, 0.06, 1);
 		}
 	}
-
-	const inputMethod = getInputMethod(event);
-	if (event.pressure > 0) {
-		return clamp(event.pressure, inputMethod === "pen" ? 0.06 : 0.2, 1);
+	if (pressureMode === "stylus") {
+		return 0.5;
 	}
 
-	if (inputMethod === "touch") {
+	if (pressureMode === "auto" && inputMethod === "touch") {
 		const webkitForce = (event as PointerEvent & { webkitForce?: number }).webkitForce;
 		if (typeof webkitForce === "number" && webkitForce > 0) {
 			return clamp(webkitForce, 0.18, 1);
 		}
-		return isTabletWebKitTouchDevice() ? 0.42 : 0.5;
 	}
 
-	if (lastPoint && event.timeStamp) {
+	if (lastPoint && event.timeStamp > lastPointTime) {
 		const deltaTimeMs = Math.max(1, event.timeStamp - lastPointTime);
 		const velocity = calculateVelocity(
 			lastPoint.clientX,
@@ -104,5 +125,5 @@ export function resolvePointerPressure(
 		return clamp(estimatePressureFromVelocity(velocity, 0), 0.2, 1);
 	}
 
-	return 0.5;
+	return inputMethod === "touch" && isTabletWebKitTouchDevice() ? 0.42 : 0.5;
 }

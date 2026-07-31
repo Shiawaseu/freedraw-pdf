@@ -2,7 +2,7 @@ import { App, MarkdownView, Menu, Notice, TFile } from "obsidian";
 import { LRUCache } from "../utils/lruCache";
 import { clamp, generateId } from "../utils/general";
 import { normalizeRect } from "../annotation/interaction";
-import { getNotebookPageSizeDimensions } from "../notebook/pageModel";
+import { getNotebookPageSizeDimensions, hasEditableNativePageTemplates } from "../notebook/pageModel";
 import { drawTemplatePageBackground } from "../notebook/templateCanvas";
 import { getNativePdfJs } from "../pdf/nativePdfJs";
 import { cloneCanvas, cropCanvasToNormalizedRect, formatAnnotatedPdfEmbedBlock, parseAnnotatedPdfEmbedSource, renderAnnotationDocumentPage, renderAnnotationDocumentPageImages } from "./embedRender";
@@ -233,7 +233,9 @@ export class AnnotatedEmbedController {
 				context.fillStyle = "#ffffff";
 				context.fillRect(0, 0, canvas.width, canvas.height);
 				await pdfPage.render({ canvasContext: context, viewport }).promise;
-				const pageTemplate = annotationDocument.pdfPageTemplates?.find((template) => template.page === pageNumber);
+				const pageTemplate = hasEditableNativePageTemplates(annotationDocument, pdfDocument.numPages)
+					? annotationDocument.pdfPageTemplates?.find((template) => template.page === pageNumber)
+					: null;
 				if (pageTemplate) {
 					drawTemplatePageBackground(context, canvas.width, canvas.height, {
 						id: `pdf-template-${pageNumber}`,

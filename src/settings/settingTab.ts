@@ -1,4 +1,5 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { TOOL_WIDTH_RANGES } from "../config";
 import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
 type SettingDefinitionCompat = {
@@ -11,6 +12,7 @@ export interface PDFAnnotatorSettingsHost {
 	getInlineToolbarPreference(): boolean;
 	shouldShowRegionToolbarButton(): boolean;
 	shouldShowCopyEmbedToolbarButton(): boolean;
+	shouldAutoCopyRegionEmbed(): boolean;
 	shouldShowAnnotatedEmbedHeader(): boolean;
 	shouldShowDrawingNotices(): boolean;
 	shouldShowRenderTelemetry(): boolean;
@@ -21,7 +23,7 @@ export interface PDFAnnotatorSettingsHost {
 	getToolDefaults(): ToolStateSnapshot;
 	getStoredPresets(): ToolPreset[];
 	updateBehaviorSettings(
-		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs">>
+		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs">>
 	): Promise<void>;
 	updateToolPreferences(snapshot: ToolStateSnapshot, presets: ToolPreset[]): void;
 }
@@ -34,28 +36,30 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 	getSettingDefinitions(): SettingDefinitionCompat[] {
 		return [
 			{
-				name: "Prefer native PDF toolbar",
-				desc: "Mount controls into Obsidian's native PDF toolbar when available. If another PDF toolbar extension is active, freedraw-pdf can fall back to the floating toolbar to avoid control conflicts.",
+				name: "Toolbar placement",
+				desc: "Keep annotation controls inside the PDF toolbar, or use a floating toolbar when another extension causes overlap.",
 				render: (setting) => {
 					setting
-						.setName("Prefer native PDF toolbar")
-						.setDesc("Mount controls into Obsidian's native PDF toolbar when available. If another PDF toolbar extension is active, freedraw-pdf can fall back to the floating toolbar to avoid control conflicts.")
-						.addToggle((toggle) => {
-							toggle
-								.setValue(this.plugin.getInlineToolbarPreference())
+						.setName("Toolbar placement")
+						.setDesc("Keep annotation controls inside the PDF toolbar, or use a floating toolbar when another extension causes overlap.")
+						.addDropdown((dropdown) => {
+							dropdown
+								.addOption("inline", "Inside PDF toolbar")
+								.addOption("floating", "Floating")
+								.setValue(this.plugin.getInlineToolbarPreference() ? "inline" : "floating")
 								.onChange(async (value) => {
-									await this.plugin.updateBehaviorSettings({ preferInlineToolbar: value });
+									await this.plugin.updateBehaviorSettings({ preferInlineToolbar: value === "inline" });
 								});
 						});
 				}
 			},
 			{
-				name: "Show Region embed toolbar button",
-				desc: "Show the crop/screenshot-style region capture tool directly in the PDF toolbar. When off, use the freedraw-pdf overflow menu instead.",
+				name: "Region capture button",
+				desc: "Show Region directly in the toolbar. When hidden, Region remains available from More.",
 				render: (setting) => {
 					setting
-						.setName("Show Region embed toolbar button")
-						.setDesc("Show the crop/screenshot-style region capture tool directly in the PDF toolbar. When off, use the freedraw-pdf overflow menu instead.")
+						.setName("Region capture button")
+						.setDesc("Show Region directly in the toolbar. When hidden, Region remains available from More.")
 						.addToggle((toggle) => {
 							toggle
 								.setValue(this.plugin.shouldShowRegionToolbarButton())
@@ -66,28 +70,44 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
-				name: "Show Copy embed toolbar button",
-				desc: "Show a direct Copy embed button after a region has been captured. When off, the same action remains available from the Region menu.",
+				name: "Copy embed button",
+				desc: "Show Copy embed after selecting a region. When hidden, the action remains in the Region menu.",
 				render: (setting) => {
 					setting
-						.setName("Show Copy embed toolbar button")
-						.setDesc("Show a direct Copy embed button after a region has been captured. When off, the same action remains available from the Region menu.")
+						.setName("Copy embed button")
+						.setDesc("Show Copy embed after selecting a region. When hidden, the action remains in the Region menu.")
 						.addToggle((toggle) => {
 							toggle
 								.setValue(this.plugin.shouldShowCopyEmbedToolbarButton())
 								.onChange(async (value) => {
 									await this.plugin.updateBehaviorSettings({ showCopyEmbedToolbarButton: value });
 								});
+					});
+				}
+			},
+			{
+				name: "Automatic region embed copy",
+				desc: "Copy the annotated Markdown embed block as soon as a region is captured.",
+				render: (setting) => {
+					setting
+						.setName("Automatic region embed copy")
+						.setDesc("Copy the annotated Markdown embed block as soon as a region is captured.")
+						.addToggle((toggle) => {
+							toggle
+								.setValue(this.plugin.shouldAutoCopyRegionEmbed())
+								.onChange(async (value) => {
+									await this.plugin.updateBehaviorSettings({ autoCopyRegionEmbed: value });
+								});
 						});
 				}
 			},
 			{
-				name: "Show annotated embed header",
-				desc: "Show title and Open/Refresh/Copy block controls above annotated PDF embeds in markdown. Off by default for a clean screenshot-like display.",
+				name: "Embed controls",
+				desc: "Show the title and Open, Refresh, and Copy controls above annotated PDF embeds in notes.",
 				render: (setting) => {
 					setting
-						.setName("Show annotated embed header")
-						.setDesc("Show title and Open/Refresh/Copy block controls above annotated PDF embeds in markdown. Off by default for a clean screenshot-like display.")
+						.setName("Embed controls")
+						.setDesc("Show the title and Open, Refresh, and Copy controls above annotated PDF embeds in notes.")
 						.addToggle((toggle) => {
 							toggle
 								.setValue(this.plugin.shouldShowAnnotatedEmbedHeader())
@@ -98,12 +118,12 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
-				name: "Show drawing notices",
-				desc: "Show temporary notices for stroke recording and undo/redo actions.",
+				name: "Action notices",
+				desc: "Show brief confirmations after drawing, undo, and redo actions.",
 				render: (setting) => {
 					setting
-						.setName("Show drawing notices")
-						.setDesc("Show temporary notices for stroke recording and undo/redo actions.")
+						.setName("Action notices")
+						.setDesc("Show brief confirmations after drawing, undo, and redo actions.")
 						.addToggle((toggle) => {
 							toggle
 								.setValue(this.plugin.shouldShowDrawingNotices())
@@ -114,12 +134,12 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
-				name: "Show rendering diagnostics",
-				desc: "Show the temporary input and rendering telemetry overlay. Off by default.",
+				name: "Rendering diagnostics",
+				desc: "Show live input and rendering timings. Enable only while investigating drawing problems.",
 				render: (setting) => {
 					setting
-						.setName("Show rendering diagnostics")
-						.setDesc("Show the temporary input and rendering telemetry overlay. Off by default.")
+						.setName("Rendering diagnostics")
+						.setDesc("Show live input and rendering timings. Enable only while investigating drawing problems.")
 						.addToggle((toggle) => {
 							toggle
 								.setValue(this.plugin.shouldShowRenderTelemetry())
@@ -130,17 +150,16 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
-				name: "Ink input mode",
-				desc: "Controls whether primary touch can draw. Touch drawing is recommended for iPad.",
+				name: "Finger input",
+				desc: "Choose what one finger does on the page. Apple Pencil and mouse draw in both modes.",
 				render: (setting) => {
 					setting
-						.setName("Ink input mode")
-						.setDesc("Controls whether primary touch can draw. Touch drawing is recommended for iPad.")
+						.setName("Finger input")
+						.setDesc("Choose what one finger does on the page. Apple Pencil and mouse draw in both modes.")
 						.addDropdown((dropdown) => {
 							dropdown
-								.addOption("pen-mouse-stylus-touch", "Pen + mouse + primary touch")
-								.addOption("pen-mouse-only", "Pen + mouse only")
-								.addOption("allow-touch", "Allow touch drawing")
+								.addOption("allow-touch", "Draw with finger")
+								.addOption("pen-mouse-only", "Pan with finger")
 								.setValue(this.plugin.getInkInputPolicy())
 								.onChange(async (value) => {
 									await this.plugin.updateBehaviorSettings({ inkInputPolicy: value as InkInputPolicy });
@@ -149,16 +168,16 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
-				name: "Live stroke preview",
-				desc: "Choose Fast for lower drawing latency, or High quality to render the final stroke style while writing.",
+				name: "Stroke preview",
+				desc: "Responsive prioritizes low latency. Detailed previews the final ink style while you draw.",
 				render: (setting) => {
 					setting
-						.setName("Live stroke preview")
-						.setDesc("Choose Fast for lower drawing latency, or High quality to render the final stroke style while writing.")
+						.setName("Stroke preview")
+						.setDesc("Responsive prioritizes low latency. Detailed previews the final ink style while you draw.")
 						.addDropdown((dropdown) => {
 							dropdown
-								.addOption("fast", "Fast")
-								.addOption("quality", "High quality")
+								.addOption("fast", "Responsive")
+								.addOption("quality", "Detailed")
 								.setValue(this.plugin.getLivePreviewMode())
 								.onChange(async (value) => {
 									await this.plugin.updateBehaviorSettings({ livePreviewMode: value as LivePreviewMode });
@@ -182,16 +201,17 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 		};
 		return [
 			{
-				name: "Pressure mode",
-				desc: "Simulated pressure uses stroke speed. Stylus pressure uses real pointer pressure when available.",
+				name: "Pressure input",
+				desc: "Use drawing speed on any device, or pressure reported by an active stylus such as Apple Pencil.",
 				render: (setting) => {
 					setting
-						.setName("Pressure mode")
-						.setDesc("Simulated pressure uses stroke speed. Stylus pressure uses real pointer pressure when available.")
+						.setName("Pressure input")
+						.setDesc("Use drawing speed on any device, or pressure reported by an active stylus such as Apple Pencil.")
 						.addDropdown((dropdown) => {
 							dropdown
-								.addOption("simulate", "Simulate pressure from mouse/stroke speed")
-								.addOption("stylus", "Use stylus pressure")
+								.addOption("auto", "Automatic")
+								.addOption("simulate", "Drawing speed")
+								.addOption("stylus", "Stylus pressure")
 								.setValue(this.plugin.getInkRenderSettings().pressureMode)
 								.onChange(async (value) => {
 									await updateInkRenderSettings({ pressureMode: value as InkPressureMode });
@@ -200,12 +220,12 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
-				name: "Thinning",
-				desc: "How much pressure changes stroke width. Demo-like value: 0.5.",
+				name: "Stroke width response",
+				desc: "How strongly pressure changes line width. Higher values produce more variation.",
 				render: (setting) => {
 					setting
-						.setName("Thinning")
-						.setDesc("How much pressure changes stroke width. Demo-like value: 0.5.")
+						.setName("Stroke width response")
+						.setDesc("How strongly pressure changes line width. Higher values produce more variation.")
 						.addSlider((slider) => {
 							slider
 								.setLimits(-1, 1, 0.05)
@@ -218,12 +238,12 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
-				name: "Streamline",
-				desc: "How strongly the line follows a stabilized path. Higher values are smoother but less immediate.",
+				name: "Stabilization",
+				desc: "Reduce hand wobble. Higher values are steadier but follow movement less immediately.",
 				render: (setting) => {
 					setting
-						.setName("Streamline")
-						.setDesc("How strongly the line follows a stabilized path. Higher values are smoother but less immediate.")
+						.setName("Stabilization")
+						.setDesc("Reduce hand wobble. Higher values are steadier but follow movement less immediately.")
 						.addSlider((slider) => {
 							slider
 								.setLimits(0, 1, 0.05)
@@ -236,12 +256,12 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
-				name: "Smoothing",
-				desc: "How rounded the freehand outline becomes.",
+				name: "Stroke smoothing",
+				desc: "Round sharp changes in the freehand outline.",
 				render: (setting) => {
 					setting
-						.setName("Smoothing")
-						.setDesc("How rounded the freehand outline becomes.")
+						.setName("Stroke smoothing")
+						.setDesc("Round sharp changes in the freehand outline.")
 						.addSlider((slider) => {
 							slider
 								.setLimits(0, 1, 0.05)
@@ -254,12 +274,12 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
-				name: "Easing",
-				desc: "Pressure response curve used by the stroke outline.",
+				name: "Pressure curve",
+				desc: "Choose how gradually pressure changes are applied to line width.",
 				render: (setting) => {
 					setting
-						.setName("Easing")
-						.setDesc("Pressure response curve used by the stroke outline.")
+						.setName("Pressure curve")
+						.setDesc("Choose how gradually pressure changes are applied to line width.")
 						.addDropdown((dropdown) => {
 							dropdown
 								.addOption("linear", "Linear")
@@ -275,21 +295,21 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			},
 			{
 				name: "Taper start",
-				desc: "Start taper length in pixels. 0 keeps the start capped.",
-				render: (setting) => this.renderInkSlider(setting, "Taper start", "Start taper length in pixels. 0 keeps the start capped.", "taperStart", updateInkRenderSettings)
+				desc: "How far the beginning narrows. 0 keeps a flat start.",
+				render: (setting) => this.renderInkSlider(setting, "Taper start", "How far the beginning narrows. 0 keeps a flat start.", "taperStart", updateInkRenderSettings)
 			},
 			{
 				name: "Taper end",
-				desc: "End taper length in pixels. 0 keeps the end capped.",
-				render: (setting) => this.renderInkSlider(setting, "Taper end", "End taper length in pixels. 0 keeps the end capped.", "taperEnd", updateInkRenderSettings)
+				desc: "How far the ending narrows. 0 keeps a flat end.",
+				render: (setting) => this.renderInkSlider(setting, "Taper end", "How far the ending narrows. 0 keeps a flat end.", "taperEnd", updateInkRenderSettings)
 			},
 			{
-				name: "Autosave delay",
-				desc: "Delay before annotation edits are written to the sidecar file.",
+				name: "Save delay",
+				desc: "Wait after the last edit before saving annotation data. Lower values save sooner.",
 				render: (setting) => {
 					setting
-						.setName("Autosave delay")
-						.setDesc("Delay before annotation edits are written to the sidecar file.")
+						.setName("Save delay")
+						.setDesc("Wait after the last edit before saving annotation data. Lower values save sooner.")
 						.addSlider((slider) => {
 							slider
 								.setLimits(200, 2000, 100)
@@ -328,19 +348,19 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 	private getDefaultToolSettingDefinitions(): SettingDefinitionCompat[] {
 		return [
 			{
-				name: "Default pen width",
+				name: "Pen width",
 				desc: "Starting width for new pen strokes.",
-				render: (setting) => this.renderDefaultWidthSetting(setting, "Default pen width", "Starting width for new pen strokes.", "pen", 1, 18)
+				render: (setting) => this.renderDefaultWidthSetting(setting, "Pen width", "Starting width for new pen strokes.", "pen", TOOL_WIDTH_RANGES.pen.min, TOOL_WIDTH_RANGES.pen.max)
 			},
 			{
-				name: "Default highlighter width",
+				name: "Highlighter width",
 				desc: "Starting width for new highlighter strokes.",
-				render: (setting) => this.renderDefaultWidthSetting(setting, "Default highlighter width", "Starting width for new highlighter strokes.", "highlighter", 4, 30)
+				render: (setting) => this.renderDefaultWidthSetting(setting, "Highlighter width", "Starting width for new highlighter strokes.", "highlighter", TOOL_WIDTH_RANGES.highlighter.min, TOOL_WIDTH_RANGES.highlighter.max)
 			},
 			{
-				name: "Default eraser width",
-				desc: "Starting size for the eraser tool.",
-				render: (setting) => this.renderDefaultWidthSetting(setting, "Default eraser width", "Starting size for the eraser tool.", "eraser", 4, 36)
+				name: "Eraser size",
+				desc: "Starting contact area for the eraser.",
+				render: (setting) => this.renderDefaultWidthSetting(setting, "Eraser size", "Starting contact area for the eraser.", "eraser", TOOL_WIDTH_RANGES.eraser.min, TOOL_WIDTH_RANGES.eraser.max)
 			}
 		];
 	}
@@ -351,7 +371,7 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			.setDesc(desc)
 			.addSlider((slider) => {
 				slider
-					.setLimits(min, max, 1)
+					.setLimits(min, max, TOOL_WIDTH_RANGES[tool].step)
 					.setValue(this.plugin.getToolDefaults().widths[tool])
 					.setDynamicTooltip()
 					.onChange((value) => {
@@ -362,9 +382,130 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			});
 	}
 
+	private renderSettingDefinitions(
+		containerEl: HTMLElement,
+		definitions: Map<string, SettingDefinitionCompat>,
+		names: string[]
+	): void {
+		for (const name of names) {
+			const definition = definitions.get(name);
+			if (!definition) {
+				continue;
+			}
+			definition.render(new Setting(containerEl));
+		}
+	}
+
+	private renderSettingsSection(
+		containerEl: HTMLElement,
+		name: string,
+		description: string
+	): void {
+		new Setting(containerEl)
+			.setName(name)
+			.setHeading();
+		containerEl.createEl("p", {
+			cls: "freedraw-pdf-settings-section-description",
+			text: description
+		});
+	}
+
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+		containerEl.addClass("freedraw-pdf-settings");
+
+		const definitions = new Map(
+			this.getSettingDefinitions().map((definition) => [definition.name, definition])
+		);
+
+		new Setting(containerEl)
+			.setName("Drawing and annotation")
+			.setHeading();
+		containerEl.createEl("p", {
+			cls: "freedraw-pdf-settings-intro",
+			text: "Choose how drawing feels and which controls stay visible. Changes apply to open PDFs immediately."
+		});
+
+		this.renderSettingsSection(
+			containerEl,
+			"Input",
+			"Set what finger, stylus, and mouse input do while annotation mode is active."
+		);
+		this.renderSettingDefinitions(containerEl, definitions, [
+			"Finger input",
+			"Stroke preview",
+			"Pressure input"
+		]);
+
+		this.renderSettingsSection(
+			containerEl,
+			"Tool defaults",
+			"Choose the starting size used when each tool is selected."
+		);
+		this.renderSettingDefinitions(containerEl, definitions, [
+			"Pen width",
+			"Highlighter width",
+			"Eraser size"
+		]);
+
+		this.renderSettingsSection(
+			containerEl,
+			"Toolbar",
+			"Keep frequent actions visible and move optional controls into menus."
+		);
+		this.renderSettingDefinitions(containerEl, definitions, [
+			"Toolbar placement",
+			"Region capture button",
+			"Copy embed button"
+		]);
+
+		this.renderSettingsSection(
+			containerEl,
+			"Markdown embeds",
+			"Control the appearance of annotated PDF previews placed in notes."
+		);
+		this.renderSettingDefinitions(containerEl, definitions, [
+			"Automatic region embed copy",
+			"Embed controls"
+		]);
+
+		this.renderSettingsSection(
+			containerEl,
+			"Saving and feedback",
+			"Control when annotation data is saved and how actions are confirmed."
+		);
+		this.renderSettingDefinitions(containerEl, definitions, [
+			"Save delay",
+			"Action notices"
+		]);
+
+		const advancedEl = containerEl.createEl("details", {
+			cls: "freedraw-pdf-settings-advanced"
+		});
+		advancedEl.createEl("summary", { text: "Advanced ink tuning" });
+		advancedEl.createEl("p", {
+			text: "Adjust stroke geometry only when the default ink feel needs fine tuning."
+		});
+		const advancedBodyEl = advancedEl.createDiv({
+			cls: "freedraw-pdf-settings-advanced-body"
+		});
+		this.renderSettingDefinitions(advancedBodyEl, definitions, [
+			"Stroke width response",
+			"Stabilization",
+			"Stroke smoothing",
+			"Pressure curve",
+			"Taper start",
+			"Taper end"
+		]);
+
+		this.renderSettingsSection(
+			containerEl,
+			"Troubleshooting",
+			"Leave diagnostics off during normal use."
+		);
+		this.renderSettingDefinitions(containerEl, definitions, ["Rendering diagnostics"]);
+		return;
 
 		new Setting(containerEl)
 			.setName("freedraw-pdf")
@@ -438,12 +579,11 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Ink input mode")
-			.setDesc("Controls whether primary touch can draw. Touch drawing is recommended for iPad.")
+			.setDesc("Choose whether one finger draws or pans. Apple Pencil and mouse draw in both modes.")
 			.addDropdown((dropdown) => {
 				dropdown
-					.addOption("pen-mouse-stylus-touch", "Pen + mouse + primary touch")
-					.addOption("pen-mouse-only", "Pen + mouse only")
-					.addOption("allow-touch", "Allow touch drawing")
+					.addOption("allow-touch", "Finger draws")
+					.addOption("pen-mouse-only", "Finger pans")
 					.setValue(this.plugin.getInkInputPolicy())
 					.onChange(async (value) => {
 						await this.plugin.updateBehaviorSettings({ inkInputPolicy: value as InkInputPolicy });
@@ -481,9 +621,10 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Pressure mode")
-			.setDesc("Simulated pressure uses stroke speed. Stylus pressure uses real pointer pressure when available.")
+			.setDesc("Automatic uses Pencil pressure when available and drawing speed for other input.")
 			.addDropdown((dropdown) => {
 				dropdown
+					.addOption("auto", "Automatic")
 					.addOption("simulate", "Simulate pressure from mouse/stroke speed")
 					.addOption("stylus", "Use stylus pressure")
 					.setValue(inkRenderSettings.pressureMode)
@@ -592,7 +733,7 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			.setDesc("Starting width for new pen strokes.")
 			.addSlider((slider) => {
 				slider
-					.setLimits(1, 18, 1)
+					.setLimits(TOOL_WIDTH_RANGES.pen.min, TOOL_WIDTH_RANGES.pen.max, TOOL_WIDTH_RANGES.pen.step)
 					.setValue(defaults.widths.pen)
 					.setDynamicTooltip()
 					.onChange((value) => {
@@ -607,7 +748,7 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			.setDesc("Starting width for new highlighter strokes.")
 			.addSlider((slider) => {
 				slider
-					.setLimits(4, 30, 1)
+					.setLimits(TOOL_WIDTH_RANGES.highlighter.min, TOOL_WIDTH_RANGES.highlighter.max, TOOL_WIDTH_RANGES.highlighter.step)
 					.setValue(defaults.widths.highlighter)
 					.setDynamicTooltip()
 					.onChange((value) => {
@@ -622,7 +763,7 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			.setDesc("Starting size for the eraser tool.")
 			.addSlider((slider) => {
 				slider
-					.setLimits(4, 36, 1)
+					.setLimits(TOOL_WIDTH_RANGES.eraser.min, TOOL_WIDTH_RANGES.eraser.max, TOOL_WIDTH_RANGES.eraser.step)
 					.setValue(defaults.widths.eraser)
 					.setDynamicTooltip()
 					.onChange((value) => {

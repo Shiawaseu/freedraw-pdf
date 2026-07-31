@@ -8,7 +8,7 @@ export type SelectionMode = "single" | "box" | "lasso";
 export type ToolPresetKind = "pen" | "highlighter" | "eraser";
 export type InkInputPolicy = "pen-mouse-stylus-touch" | "pen-mouse-only" | "allow-touch";
 export type LivePreviewMode = "fast" | "quality";
-export type InkPressureMode = "simulate" | "stylus";
+export type InkPressureMode = "auto" | "simulate" | "stylus";
 export type InkEasingMode = "linear" | "ease-in" | "ease-out" | "ease-in-out";
 export type TextFontWeight = "normal" | "bold";
 export type TextFontStyle = "normal" | "italic";
@@ -58,12 +58,14 @@ export interface PreviewStateSnapshot {
 }
 
 export interface PDFAnnotatorSettings {
+	pressureCaptureVersion: number;
 	toolDefaults: ToolStateSnapshot;
 	presets: ToolPreset[];
 	textColor: string;
 	preferInlineToolbar: boolean;
 	showRegionToolbarButton: boolean;
 	showCopyEmbedToolbarButton: boolean;
+	autoCopyRegionEmbed: boolean;
 	showAnnotatedEmbedHeader: boolean;
 	showDrawingNotices: boolean;
 	showRenderTelemetry: boolean;
@@ -89,6 +91,8 @@ export interface StrokeAnnotation {
 	widthScale?: number;
 	zIndex?: number;
 	points: AnnotationPoint[];
+	cutStart?: boolean;
+	cutEnd?: boolean;
 	createdAt: string;
 }
 
@@ -198,6 +202,19 @@ export interface NotebookDocument {
 	pages: NotebookPage[];
 }
 
+export interface RemovedNotebookPage {
+	page: NotebookPage;
+	originalIndex: number;
+	removedAt: string;
+	annotations: {
+		strokes: StrokeAnnotation[];
+		eraserPaths: EraserPathAnnotation[];
+		textItems: TextAnnotation[];
+		shapes: ShapeAnnotation[];
+		imageItems: ImageAnnotation[];
+	};
+}
+
 export interface NotebookHistoryState {
 	document: NotebookDocument;
 	activePageId: string | null;
@@ -213,6 +230,8 @@ export interface MixedPageEntry {
 	template?: NotebookTemplate;
 	pageSize?: NotebookPageSize;
 	paperColor?: string;
+	isRemoved?: boolean;
+	removedKind?: "pdf" | "added";
 }
 
 export interface NormalizedRect {
@@ -261,8 +280,11 @@ export interface AnnotationDocument {
 	shapes: ShapeAnnotation[];
 	imageItems?: ImageAnnotation[];
 	pdfPageTemplates?: PdfPageTemplate[];
+	nativePageTemplatesEditable?: boolean;
 	appendedPages?: NotebookPage[];
 	deletedPdfPages?: number[];
+	permanentlyDeletedPdfPages?: number[];
+	removedPages?: RemovedNotebookPage[];
 }
 
 export interface AnnotationLoadInfo {

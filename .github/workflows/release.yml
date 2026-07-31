@@ -33,6 +33,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          zip -j "dist/freedraw-pdf-${GITHUB_REF_NAME}.zip" manifest.json main.js styles.css
+
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@v2
         with:
@@ -40,6 +46,7 @@ jobs:
             manifest.json
             main.js
             styles.css
+            dist/freedraw-pdf-*.zip
 
       - name: Verify manifest version matches tag
         shell: bash
@@ -58,14 +65,17 @@ jobs:
 
             - Built from the tagged source by GitHub Actions.
             - Includes manifest.json, main.js, and styles.css for Obsidian manual installation.
+            - Includes a ready-to-install ZIP containing the same release files.
             - Release artifacts are covered by GitHub artifact attestations.
-            - Expands text formatting and editing behavior, including keyboard navigation and export/embed fidelity.
-            - Aligns text, pen, and highlighter color controls and popup spacing.
-            - Keeps page action menus above the Pages dialog.
-            - Improves retained-stroke rendering, atomic erasing, touch admission, and render/input scheduling.
+            - Adds a mixed-page lifecycle with restore and permanent-delete controls for removed pages.
+            - Connects mixed-page navigation and thumbnails to Obsidian's native PDF controls.
+            - Improves iPad input admission, finger panning, text keyboard avoidance, and mobile toolbar sizing.
+            - Stores touch-erased survivor geometry directly, without replaying eraser masks or recalculating intact strokes.
+            - Expands pen, highlighter, and eraser width ranges while keeping mobile controls consistently sized.
 
             Known limitation: rapid consecutive drawing with primary touch in Obsidian on iPad can still miss input while a previous page rebuild is active. This remains under investigation.
           files: |
             manifest.json
             main.js
             styles.css
+            dist/freedraw-pdf-${{ github.ref_name }}.zip

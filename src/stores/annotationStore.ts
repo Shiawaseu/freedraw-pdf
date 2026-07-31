@@ -1,7 +1,7 @@
 import { App, Notice, TFile } from "obsidian";
 import { ANNOTATION_FILE_SUFFIX } from "../config";
 import { getAnnotationRenderables } from "../annotation/renderOrder";
-import { migrateLegacyEraserPaths } from "../annotation/eraser";
+import { migrateLegacyEraserPaths, migrateStrokeEraseMasks } from "../annotation/eraser";
 import { generateId } from "../utils/general";
 import type { AnnotationDocument, AnnotationLoadInfo, EraserPathAnnotation, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
 
@@ -35,7 +35,7 @@ export function getPdfIdentity(file: TFile): AnnotationDocument["sourcePdf"] {
 
 export function createEmptyDocument(file: TFile): AnnotationDocument {
 	return {
-		version: 7,
+		version: 8,
 		sourceFile: file.path,
 		sourcePdf: getPdfIdentity(file),
 		updatedAt: new Date().toISOString(),
@@ -45,8 +45,11 @@ export function createEmptyDocument(file: TFile): AnnotationDocument {
 		shapes: [],
 		imageItems: [],
 		pdfPageTemplates: [],
+		nativePageTemplatesEditable: false,
 		appendedPages: [],
-		deletedPdfPages: []
+		deletedPdfPages: [],
+		permanentlyDeletedPdfPages: [],
+		removedPages: []
 	};
 }
 
@@ -161,7 +164,7 @@ export class AnnotationStore {
 			const parsed = JSON.parse(raw) as Partial<AnnotationDocument>;
 			const sourcePdfPath = typeof parsed.sourcePdf?.path === "string" ? parsed.sourcePdf.path : parsed.sourceFile;
 			const document: AnnotationDocument = {
-				version: Math.max(7, parsed.version ?? 4),
+				version: Math.max(8, parsed.version ?? 4),
 				sourceFile: parsed.sourceFile ?? file.path,
 				sourcePdf: this.normalizeSourcePdf(parsed.sourcePdf, file),
 				updatedAt: parsed.updatedAt ?? new Date().toISOString(),
@@ -210,6 +213,9 @@ export class AnnotationStore {
 						pageSize: pageTemplate.pageSize ?? "a4"
 					}))
 					: [],
+				nativePageTemplatesEditable: typeof parsed.nativePageTemplatesEditable === "boolean"
+					? parsed.nativePageTemplatesEditable
+					: undefined,
 				appendedPages: Array.isArray(parsed.appendedPages)
 					? parsed.appendedPages.map((page, index) => ({
 						id: page.id ?? generateId("page"),
@@ -231,9 +237,72 @@ export class AnnotationStore {
 						.map((page) => Math.round(Number(page)))
 						.filter((page) => Number.isFinite(page) && page > 0)))
 						.sort((a, b) => a - b)
+					: [],
+				permanentlyDeletedPdfPages: Array.isArray(parsed.permanentlyDeletedPdfPages)
+					? Array.from(new Set(parsed.permanentlyDeletedPdfPages
+						.map((page) => Math.round(Number(page)))
+						.filter((page) => Number.isFinite(page) && page > 0)))
+						.sort((a, b) => a - b)
+					: [],
+				removedPages: Array.isArray(parsed.removedPages)
+					? parsed.removedPages
+						.filter((entry) => !!entry?.page?.id)
+						.map((entry, index) => ({
+							page: {
+								...entry.page,
+								id: entry.page.id ?? generateId("page"),
+								title: entry.page.title ?? `Removed page ${index + 1}`,
+								kind: "template" as const,
+								sourceLabel: "Template page",
+								insertAfterPdfPage: typeof entry.page.insertAfterPdfPage === "number"
+									? entry.page.insertAfterPdfPage
+									: null,
+								template: entry.page.template ?? "ruled",
+								paperColor: entry.page.paperColor ?? "#fffdf7",
+								pageSize: entry.page.pageSize ?? "a4",
+								strokes: [],
+								textItems: [],
+								shapes: [],
+								imageItems: []
+							},
+							originalIndex: Math.max(0, Math.round(Number(entry.originalIndex) || 0)),
+							removedAt: entry.removedAt ?? new Date().toISOString(),
+							annotations: {
+								strokes: Array.isArray(entry.annotations?.strokes)
+									? entry.annotations.strokes.map((stroke) => ({ ...stroke, page: stroke.page ?? 1 }))
+									: [],
+								eraserPaths: Array.isArray(entry.annotations?.eraserPaths)
+									? entry.annotations.eraserPaths.map((eraserPath) => ({
+										...eraserPath,
+										page: eraserPath.page ?? 1,
+										radiusScale: Math.max(0.0005, Number(eraserPath.radiusScale) || 0.004)
+									}))
+									: [],
+								textItems: Array.isArray(entry.annotations?.textItems)
+									? entry.annotations.textItems.map((item) => ({ ...item, page: item.page ?? 1 }))
+									: [],
+								shapes: Array.isArray(entry.annotations?.shapes)
+									? entry.annotations.shapes.map((shape) => ({ ...shape, page: shape.page ?? 1 }))
+									: [],
+								imageItems: Array.isArray(entry.annotations?.imageItems)
+									? entry.annotations.imageItems.map((image) => ({
+										...image,
+										page: image.page ?? 1,
+										x: Number.isFinite(image.x) ? image.x : 0.32,
+										y: Number.isFinite(image.y) ? image.y : 0.32,
+										widthScale: Number.isFinite(image.widthScale) ? image.widthScale : 0.36,
+										heightScale: Number.isFinite(image.heightScale) ? image.heightScale : 0.24
+									}))
+									: []
+							}
+						}))
 					: []
 			};
-			const migratedLegacyErasers = migrateLegacyEraserPaths(document);
+			let migratedStrokeMasks = migrateStrokeEraseMasks(document.strokes, () => generateId("stroke"));
+			for (const removedPage of document.removedPages ?? []) {
+				migratedStrokeMasks = migrateStrokeEraseMasks(removedPage.annotations.strokes, () => generateId("stroke")) || migratedStrokeMasks;
+			}
+			const migratedLegacyErasers = migrateLegacyEraserPaths(document) || migratedStrokeMasks;
 			return {
 				document,
 				sidecarPath: path,
@@ -284,10 +353,25 @@ export class AnnotationStore {
 		const oldSidecarPath = `${oldPath}${ANNOTATION_FILE_SUFFIX}`;
 		const newSidecarPath = this.getSidecarPath(file);
 		const exists = await this.app.vault.adapter.exists(oldSidecarPath);
-		if (!exists || oldSidecarPath === newSidecarPath) {
+		if (!exists) {
 			return;
 		}
-		await this.app.vault.adapter.rename(oldSidecarPath, newSidecarPath);
+		const raw = await this.app.vault.adapter.read(oldSidecarPath);
+		const parsed = JSON.parse(raw) as AnnotationDocument;
+		const payload = JSON.stringify(
+			{
+				...parsed,
+				sourceFile: file.path,
+				sourcePdf: getPdfIdentity(file),
+				updatedAt: new Date().toISOString()
+			},
+			null,
+			2
+		);
+		await this.app.vault.adapter.write(newSidecarPath, payload);
+		if (oldSidecarPath !== newSidecarPath && await this.app.vault.adapter.exists(oldSidecarPath)) {
+			await this.app.vault.adapter.remove(oldSidecarPath);
+		}
 	}
 
 	async deleteForPdfPath(pdfPath: string): Promise<boolean> {

@@ -56,6 +56,13 @@ assertContains("main.ts", mainTs, 'key === "arrowleft" || key === "arrowright"',
 assertContains("main.ts", mainTs, "moveInlineTextCaretHorizontally", "inline text arrows must not fall through to annotation nudging");
 assertContains("main.ts", mainTs, "editor.spellcheck = true;", "inline text editing must use native spellcheck");
 assertContains("main.ts", mainTs, 'editor.autocapitalize = "sentences";', "mobile text editing must use sentence capitalization");
+assertContains("main.ts", mainTs, "editor.focus({ preventScroll: true });", "Pencil-created text must focus synchronously while iPadOS still has user activation");
+assertContains("main.ts", mainTs, 'editor.inputMode = "text";', "Pencil-created text must request the iPad text keyboard");
+assertContains("main.ts", mainTs, 'editor.addEventListener("pointerdown", () => focusEditor());', "touching an active text frame must restore its editor focus");
+assertContains("main.ts", mainTs, "if (activeElement === editor)", "a transient mobile blur must not commit an editor that regained focus");
+assertContains("main.ts", mainTs, "private keepInlineTextEditorAboveKeyboard(): void", "focused iPad text must stay above the software keyboard");
+assertContains("main.ts", mainTs, "scrollEl.scrollTop = clamp(scrollEl.scrollTop + deltaY", "keyboard avoidance must move the PDF scroller instead of the whole Obsidian window");
+assertContains("main.ts", mainTs, "private captureVisualViewportBaseline(): void", "keyboard detection must retain the pre-keyboard iPad viewport height");
 assertContains("main.ts", mainTs, "if (this.inlineTextEditorEl) {", "text menus must prefer the active editor style");
 assertContains("main.ts", mainTs, "this.resolveStoredFontScale(existingItem)", "reopening text must preserve its stored logical size");
 assertContains("main.ts", mainTs, "getRenderedTextFontSize(this.getStableTextFontScale(this.currentTextFontSize), surface.lastWidth)", "inline editor size must follow page scaling");
@@ -93,6 +100,8 @@ assertContains("styles.css", stylesCss, "height: 1em;", "the compact caret must 
 assertContains("styles.css", stylesCss, "vertical-align: text-top;", "the compact caret must align with the selected font's typing line");
 assertContains("styles.css", stylesCss, "transform: translateY(-0.16em);", "the compact caret must sit above the font's default text-top position");
 assertContains("styles.css", stylesCss, "border: 1px dotted #6b6b6b;", "text selection must use a PowerPoint-style neutral outline");
+assertContains("styles.css", stylesCss, ".pdf-native-annotator-host .pdf-native-annotator-inline-text-handle", "mobile themes must not override text handle appearance");
+assertContains("styles.css", stylesCss, "background-color: transparent;", "the iPad inline editor must not inherit an opaque theme background");
 assertContains("src/text/textLayout.ts", textLayoutTs, "Array.from(currentLine)", "long words must wrap by Unicode code point");
 
 const previousTypeScriptLoader = require.extensions[".ts"];

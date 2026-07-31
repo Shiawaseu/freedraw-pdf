@@ -168,7 +168,11 @@ function renderEmbedStroke(context: CanvasRenderingContext2D, stroke: StrokeAnno
 	context.strokeStyle = stroke.color;
 	context.lineCap = "round";
 	context.lineJoin = "round";
-	drawSmoothInkStroke(context, stroke.points, width, height, baseWidth, stroke.tool !== "highlighter", false, { renderMode: "committed" });
+	drawSmoothInkStroke(context, stroke.points, width, height, baseWidth, stroke.tool !== "highlighter", false, {
+		renderMode: "committed",
+		startTaper: stroke.cutStart ? 0 : undefined,
+		endTaper: stroke.cutEnd ? 0 : undefined
+	});
 	context.restore();
 }
 

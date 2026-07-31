@@ -13,6 +13,12 @@ function assertContains(fileName, content, needle, message) {
 	}
 }
 
+function assertNotContains(fileName, content, needle, message) {
+	if (content.includes(needle)) {
+		throw new Error(`${fileName}: ${message}\nUnexpected: ${needle}`);
+	}
+}
+
 const pageModelTs = read("src/notebook/pageModel.ts");
 const templateCanvasTs = read("src/notebook/templateCanvas.ts");
 const mixedExportTs = read("src/export/mixedDocumentExport.ts");
@@ -29,11 +35,12 @@ assertContains("src/notebook/templateCanvas.ts", templateCanvasTs, "getPaperTemp
 assertContains("main.ts", mainTs, "getNotebookPageRenderDimensions(templatePage.pageSize, BLANK_PDF_EXPORT_WIDTH_PX)", "blank annotatable PDFs must use shared render dimensions");
 assertContains("main.ts", mainTs, "canvas.width = renderDimensions.width", "blank annotatable PDFs must preserve page-size width");
 assertContains("main.ts", mainTs, "canvas.height = renderDimensions.height", "blank annotatable PDFs must preserve page-size height");
-assertContains("main.ts", mainTs, "annotationDocument.pdfPageTemplates", "blank PDFs must store template metadata instead of baking pattern lines into the PDF");
+assertContains("main.ts", mainTs, "annotationDocument.nativePageTemplatesEditable = true", "blank PDFs must be marked as plugin-created before enabling native template controls");
+assertContains("main.ts", mainTs, "annotationDocument.pdfPageTemplates =", "blank PDFs must store editable native-page template metadata");
 
 assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "getNotebookPageRenderDimensions(syntheticPage.pageSize, EXPORT_PAGE_WIDTH_PX)", "synthetic mixed export must use shared render dimensions");
 assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "drawTemplatePageBackground(context, canvas.width, canvas.height, syntheticPage)", "synthetic mixed export must use the shared template renderer");
-assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "drawTemplatePageBackground(context, canvas.width, canvas.height, {", "PDF-template export must use the shared template renderer");
+assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "hasEditableNativePageTemplates(annotationDocument, realPdfPageCount)", "native PDF export must only apply templates to plugin-created PDFs");
 
 assertContains("package.json", JSON.stringify(packageJson.scripts), "check:templates", "package scripts must expose this verifier");
 

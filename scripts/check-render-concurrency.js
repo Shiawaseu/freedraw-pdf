@@ -28,12 +28,20 @@ async function main() {
 	assert(mainSource.includes("scheduling?.isInputPending?.() ?? false"), "render scheduler must query discrete pending input");
 	assert(!mainSource.includes("includeContinuous: true"), "continuous touch input must not keep rendering pending forever");
 	assert(mainSource.includes("await this.createCanvasSnapshot(job.canvas)"), "completed renders must snapshot asynchronously");
+	assert(mainSource.includes("this.resizeOverlay(surface, true);"), "zoom rendering must preserve the last visible frame until publication");
+	assert(mainSource.includes("this.syncCanvasBackingSize(surface.overlayEl, job.width, job.height);"), "publication must size the visible canvas only when the replacement frame is ready");
+	assert(mainSource.includes("this.syncCanvasBackingSize(surface.transientEl, surface.lastWidth, surface.lastHeight);"), "live strokes must use the current zoom backing size");
+	assert(mainSource.includes("this.syncCanvasBackingSize(surface.overlayEl, surface.lastWidth, surface.lastHeight, true);"), "a stroke committed during zoom must preserve and resize the visible frame");
+	assert(!mainSource.includes('surface.overlayEl.setCssStyles({ opacity: "0.96" });'), "zoom must not fade otherwise stable strokes");
+	assert(mainSource.includes("Math.abs(viewport.scale - 1) < 0.05"), "pinch zoom must not trigger keyboard-only text recentering");
 	assert(!mainSource.includes("this.publishRenderedCanvas(job.canvas, surface.overlayEl);"), "background render publication must not perform a synchronous full-frame copy");
 	assert(mainSource.includes("this.renderInputEpoch === job.inputEpoch"), "touch input must invalidate stale render publications");
 	assert(mainSource.includes("this.cancelPendingInteractionRedraw();"), "touch admission must cancel queued interaction redraws");
 	assert(!mainSource.includes("this.currentStroke.points = this.currentStroke.points.slice(0, this.currentStrokeRenderedPointCount)"), "preview lag must never truncate recorded touch samples");
 	assert(mainSource.includes("private nextPageZIndexCache = new Map<number, number>();"), "rapid strokes must use a constant-time page z-index allocator");
 	assert(!mainSource.includes("const liveStrokeIds = new Set(this.annotationDocument.strokes.map"), "stroke commit must not scan every stored stroke");
+	assert(!mainSource.includes("maskedStrokeRasterCache"), "touch erase must not retain or rerender masked source strokes");
+	assert(!mainSource.includes("applyStrokeEraseMasks"), "page rendering must not replay touch eraser paths");
 	const transpiled = ts.transpileModule(source, {
 		compilerOptions: {
 			module: ts.ModuleKind.CommonJS,

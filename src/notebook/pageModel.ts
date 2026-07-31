@@ -1,6 +1,25 @@
 import type { TFile } from "obsidian";
 import { generateId } from "../utils/general";
-import type { NotebookPage, NotebookPageSize, NotebookTemplate } from "../types";
+import type { AnnotationDocument, NotebookPage, NotebookPageSize, NotebookTemplate } from "../types";
+
+export function hasEditableNativePageTemplates(document: AnnotationDocument, realPdfPageCount: number): boolean {
+	if (document.nativePageTemplatesEditable === true) {
+		return true;
+	}
+	if (document.nativePageTemplatesEditable === false || realPdfPageCount < 1) {
+		return false;
+	}
+	const templatePages = new Set((document.pdfPageTemplates ?? []).map((template) => template.page));
+	if (templatePages.size !== realPdfPageCount) {
+		return false;
+	}
+	for (let pageNumber = 1; pageNumber <= realPdfPageCount; pageNumber += 1) {
+		if (!templatePages.has(pageNumber)) {
+			return false;
+		}
+	}
+	return true;
+}
 
 export function createTemplateNotebookPage(
 	title: string,

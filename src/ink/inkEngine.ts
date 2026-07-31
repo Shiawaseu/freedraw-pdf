@@ -15,6 +15,8 @@ export interface InkStroke {
 
 export interface InkRenderOptions {
 	renderMode?: "live" | "committed";
+	startTaper?: number;
+	endTaper?: number;
 }
 
 export interface InkAppendOptions {
@@ -48,7 +50,7 @@ const DEFAULT_INK_RENDER_SETTINGS: InkRenderSettings = {
 	easing: "linear",
 	taperStart: 0,
 	taperEnd: 0,
-	pressureMode: "simulate"
+	pressureMode: "auto"
 };
 
 let activeInkRenderSettings: InkRenderSettings = { ...DEFAULT_INK_RENDER_SETTINGS };
@@ -61,7 +63,9 @@ export function setInkRenderSettings(settings: Partial<InkRenderSettings> | null
 		easing: normalizeEasing(settings?.easing),
 		taperStart: clamp(settings?.taperStart ?? DEFAULT_INK_RENDER_SETTINGS.taperStart, 0, 120),
 		taperEnd: clamp(settings?.taperEnd ?? DEFAULT_INK_RENDER_SETTINGS.taperEnd, 0, 120),
-		pressureMode: settings?.pressureMode === "stylus" ? "stylus" : "simulate"
+		pressureMode: settings?.pressureMode === "stylus" || settings?.pressureMode === "simulate"
+			? settings.pressureMode
+			: "auto"
 	};
 }
 
@@ -426,7 +430,9 @@ export function getSmoothInkStrokeOutline(
 			return null;
 		}
 		const settings = activeInkRenderSettings;
-		const effectiveUsePressure = usePressure && settings.pressureMode === "stylus";
+		// Pressure mode is resolved while samples are captured. Rendering the stored
+		// pressure directly keeps old strokes stable when the preference changes.
+		const effectiveUsePressure = usePressure;
 		const easing = getEasingFunction(settings.easing);
 		const outline = getStroke(
 			renderPoints.map((point) => [point.x * width, point.y * height, effectiveUsePressure ? clamp(point.pressure, 0.12, 1) : 0.5]),
@@ -436,15 +442,15 @@ export function getSmoothInkStrokeOutline(
 				smoothing: settings.smoothing,
 				streamline: settings.streamline,
 				easing,
-				simulatePressure: !effectiveUsePressure,
+				simulatePressure: false,
 				last: true,
 				start: {
-					taper: settings.taperStart,
+					taper: options.startTaper ?? settings.taperStart,
 					easing,
 					cap: true
 				},
 				end: {
-					taper: settings.taperEnd,
+					taper: options.endTaper ?? settings.taperEnd,
 					easing,
 					cap: true
 				}

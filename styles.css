@@ -18,9 +18,13 @@
 	position: relative;
 	z-index: 10000;
 	display: inline-flex;
+	flex: 0 1 auto;
+	width: auto;
+	min-width: 0;
 	align-items: center;
 	gap: 8px;
-	margin-left: 8px;
+	margin-left: auto;
+	overflow: hidden;
 	vertical-align: middle;
 }
 
@@ -58,8 +62,12 @@
 }
 
 .pdf-native-annotator-ui.is-inline .pdf-native-annotator-toolbar {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
 	flex-wrap: nowrap;
 	justify-content: flex-start;
+	width: 100%;
+	min-width: 0;
 	gap: 6px;
 	padding: 0;
 	border: 0;
@@ -68,11 +76,85 @@
 	box-shadow: none;
 }
 
+.pdf-native-annotator-ui.is-inline .pdf-native-annotator-group {
+	flex-wrap: nowrap;
+}
+
+.pdf-native-annotator-ui.is-inline .pdf-native-annotator-group.is-tools {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow-x: auto;
+	overflow-y: hidden;
+	overscroll-behavior-x: contain;
+	scrollbar-width: none;
+}
+
+.pdf-native-annotator-ui.is-inline .pdf-native-annotator-group.is-tools::-webkit-scrollbar {
+	display: none;
+}
+
+.pdf-native-annotator-ui.is-inline .pdf-native-annotator-toolbar-section.is-mode {
+	position: sticky;
+	left: 0;
+	z-index: 2;
+	padding-inline-end: 4px;
+	background: var(--background-primary);
+}
+
+.pdf-native-annotator-ui.is-inline .pdf-native-annotator-group.is-actions {
+	position: relative;
+	z-index: 1;
+	flex: 0 0 auto;
+	margin-inline-start: 2px;
+	padding-inline-start: 6px;
+	border-inline-start: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+}
+
 .pdf-native-annotator-group {
 	display: inline-flex;
 	flex-wrap: wrap;
 	align-items: center;
 	gap: 3px;
+}
+
+.pdf-native-annotator-toolbar-section {
+	display: inline-flex;
+	flex: 0 0 auto;
+	align-items: center;
+	gap: 3px;
+}
+
+.pdf-native-annotator-toolbar-section:empty {
+	display: none;
+}
+
+.pdf-native-annotator-ui.is-inline .pdf-native-annotator-toolbar-section.is-tool-picker {
+	padding: 2px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: var(--background-secondary);
+}
+
+.pdf-native-annotator-ui.is-inline .pdf-native-annotator-toolbar-section.is-tool-picker .pdf-native-annotator-button {
+	border-color: transparent;
+	background: transparent;
+	box-shadow: none;
+}
+
+.pdf-native-annotator-ui.is-inline .pdf-native-annotator-toolbar-section.is-tool-picker .pdf-native-annotator-button:hover {
+	background: var(--background-modifier-hover);
+}
+
+.pdf-native-annotator-ui.is-inline .pdf-native-annotator-toolbar-section.is-tool-picker .pdf-native-annotator-button.is-active {
+	border-color: var(--background-modifier-border-hover);
+	background: var(--background-modifier-active-hover);
+}
+
+.pdf-native-annotator-toolbar-section.is-tool-style:not(:empty) {
+	margin-inline-start: 3px;
+	padding-inline-start: 6px;
+	border-inline-start: 1px solid var(--background-modifier-border);
 }
 
 .pdf-native-annotator-preset {
@@ -244,15 +326,48 @@
 	padding: 0;
 }
 
+.pdf-native-annotator-labeled-icon-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	padding-inline: 9px;
+	white-space: nowrap;
+}
+
+.pdf-native-annotator-labeled-icon-button svg {
+	width: 16px;
+	height: 16px;
+}
+
+.pdf-toolbar input.pdf-native-annotator-native-mixed-page-input {
+	border-color: color-mix(in srgb, var(--interactive-accent) 55%, var(--background-modifier-border));
+	background: color-mix(in srgb, var(--interactive-accent) 8%, var(--background-modifier-form-field));
+	font-weight: var(--font-semibold);
+}
+
+.pdf-toolbar input.pdf-native-annotator-native-mixed-page-input:focus {
+	border-color: var(--interactive-accent);
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+}
+
+.pdf-toolbar .pdf-native-annotator-native-mixed-page-count {
+	color: var(--text-normal);
+	font-weight: var(--font-medium);
+	white-space: nowrap;
+}
+
 .pdf-native-annotator-swatch {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	width: 28px;
 	height: 28px;
+	min-width: 28px;
+	min-height: 28px;
 	padding: 0;
 	border: 1px solid var(--background-modifier-border);
-	border-radius: 999px;
+	border-radius: 5px;
 	background: transparent;
 	cursor: pointer;
 	box-shadow: none;
@@ -269,10 +384,14 @@
 
 .pdf-native-annotator-swatch-inner {
 	display: block;
-	width: 18px;
-	height: 18px;
-	border-radius: 50%;
-	border: 1px solid rgba(0, 0, 0, 0.08);
+	flex: 0 0 20px;
+	width: 20px;
+	height: 20px;
+	min-width: 20px;
+	min-height: 20px;
+	border-radius: 3px;
+	border: 1px solid color-mix(in srgb, var(--text-normal) 28%, transparent);
+	box-sizing: border-box;
 }
 
 .pdf-native-annotator-color {
@@ -305,9 +424,12 @@
 
 .pdf-native-annotator-color-button-preview {
 	display: block;
-	width: 16px;
-	height: 16px;
-	border-radius: 999px;
+	flex: 0 0 20px;
+	width: 20px;
+	height: 20px;
+	min-width: 20px;
+	min-height: 20px;
+	border-radius: 4px;
 	border: 1px solid color-mix(in srgb, var(--background-modifier-border) 80%, transparent);
 	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--background-primary) 44%, transparent);
 }
@@ -324,7 +446,7 @@
 .pdf-native-annotator-font-popover,
 .pdf-native-annotator-stroke-popover {
 	pointer-events: auto;
-	touch-action: none;
+	touch-action: manipulation;
 }
 
 .modal.pdf-native-annotator-color-popover,
@@ -354,7 +476,7 @@
 }
 
 .modal.pdf-native-annotator-page-list-popover {
-	width: min(460px, calc(100vw - 24px));
+	width: min(380px, calc(100vw - 24px));
 }
 
 .pdf-native-annotator-popover-backdrop {
@@ -534,6 +656,161 @@
 	font: var(--font-ui-smaller);
 }
 
+.pdf-sidebar-container .pdf-thumbnail-view > .pdf-native-annotator-native-pdf-page-hidden {
+	display: none;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view > .pdf-native-annotator-native-page-entry {
+	position: relative;
+	flex: 0 0 auto;
+	overflow-anchor: none;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail {
+	--page-list-paper: #fffdf7;
+	cursor: var(--cursor);
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail-paper {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	background: var(--page-list-paper);
+	box-shadow: var(--pdf-thumbnail-shadow);
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail-pattern {
+	position: absolute;
+	inset: 0;
+	opacity: 0.52;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail.is-template-ruled .pdf-native-annotator-native-thumbnail-pattern {
+	background-image: repeating-linear-gradient(
+		to bottom,
+		transparent 0 15px,
+		color-mix(in srgb, var(--text-faint) 38%, transparent) 15px 16px
+	);
+	background-position: 0 10px;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail.is-template-grid .pdf-native-annotator-native-thumbnail-pattern {
+	background-image:
+		linear-gradient(color-mix(in srgb, var(--text-faint) 30%, transparent) 1px, transparent 1px),
+		linear-gradient(90deg, color-mix(in srgb, var(--text-faint) 30%, transparent) 1px, transparent 1px);
+	background-size: 14px 14px;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail.is-template-dot .pdf-native-annotator-native-thumbnail-pattern {
+	background-image: radial-gradient(color-mix(in srgb, var(--text-faint) 46%, transparent) 1px, transparent 1.5px);
+	background-size: 12px 12px;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail-kind {
+	position: absolute;
+	top: var(--size-4-1);
+	inset-inline-start: var(--size-4-1);
+	padding: 2px 5px;
+	border-radius: 3px;
+	background: color-mix(in srgb, var(--background-secondary) 88%, transparent);
+	color: var(--text-muted);
+	font-size: 9px;
+	font-weight: var(--font-semibold);
+	line-height: 1.2;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail-count {
+	position: absolute;
+	inset-inline-start: calc(var(--size-4-2) + 2px);
+	bottom: calc(var(--size-4-2) + 2px);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 17px;
+	height: 17px;
+	padding: 0 4px;
+	border-radius: 999px;
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+	font-size: 9px;
+	font-weight: var(--font-semibold);
+	line-height: 1;
+	box-shadow: 0 0 0 2px var(--page-list-paper);
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail-action {
+	position: absolute;
+	z-index: 2;
+	top: calc(var(--size-4-2) + 2px);
+	inset-inline-end: calc(var(--size-4-2) + 2px);
+	width: 28px;
+	height: 28px;
+	border-radius: var(--clickable-icon-radius);
+	background: color-mix(in srgb, var(--background-primary) 92%, transparent);
+	color: var(--text-muted);
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+	opacity: 0;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-page-entry:hover .pdf-native-annotator-native-thumbnail-action,
+.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-page-entry:focus-within .pdf-native-annotator-native-thumbnail-action {
+	opacity: 1;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view.pdf-native-annotator-has-synthetic-selection > a .thumbnail.selected {
+	border-color: transparent;
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view > .pdf-native-annotator-native-page-footer {
+	display: grid;
+	grid-template-columns: 20px minmax(0, 1fr);
+	align-items: center;
+	order: 2147483647;
+	flex: 1 0 100%;
+	gap: var(--size-4-2);
+	width: 100%;
+	min-height: 34px;
+	margin-top: var(--size-4-2);
+	padding: var(--size-4-1) var(--size-4-2);
+	box-sizing: border-box;
+	border: 0;
+	border-top: 1px solid var(--background-modifier-border);
+	border-radius: 0;
+	background: transparent;
+	box-shadow: none;
+	color: var(--text-muted);
+	text-align: start;
+	cursor: var(--cursor);
+}
+
+.pdf-sidebar-container .pdf-thumbnail-view > .pdf-native-annotator-native-page-footer:hover,
+.pdf-sidebar-container .pdf-thumbnail-view > .pdf-native-annotator-native-page-footer:focus-visible {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.pdf-native-annotator-native-page-footer-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+}
+
+.pdf-native-annotator-native-page-footer-count {
+	white-space: nowrap;
+	color: var(--text-faint);
+	font: var(--font-ui-smaller);
+}
+
+@media (hover: none) {
+	.pdf-sidebar-container .pdf-thumbnail-view .pdf-native-annotator-native-thumbnail-action {
+		width: 36px;
+		height: 36px;
+		opacity: 1;
+	}
+}
+
 .pdf-native-annotator-page-list-popover {
 	position: fixed;
 	z-index: var(--pdf-native-annotator-popover-z, 100000);
@@ -542,7 +819,7 @@
 	box-sizing: border-box;
 	overflow: hidden;
 	pointer-events: auto;
-	touch-action: none;
+	touch-action: pan-y;
 }
 
 .pdf-native-annotator-page-list-open .menu {
@@ -556,6 +833,7 @@
 	min-height: 0;
 	overflow: auto;
 	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
 	padding-right: var(--size-2-1);
 }
 
@@ -563,7 +841,7 @@
 	display: flex;
 	flex-wrap: wrap;
 	gap: var(--size-4-3);
-	margin: calc(var(--size-4-2) * -1) 0 var(--size-4-4);
+	margin: 0 0 var(--size-4-3);
 }
 
 .pdf-native-annotator-page-list-overview span {
@@ -573,23 +851,26 @@
 
 .pdf-native-annotator-page-list-filters {
 	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
+	flex-wrap: nowrap;
+	gap: 2px;
 	margin-bottom: var(--size-4-3);
-	padding-bottom: var(--size-4-3);
-	border-bottom: 1px solid var(--background-modifier-border);
+	padding: 2px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: var(--background-secondary);
 }
 
 .pdf-native-annotator-page-list-filter {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	gap: 0;
+	flex: 1 1 0;
+	gap: 5px;
 	border: 1px solid transparent;
 	border-radius: var(--radius-s);
 	background: transparent;
 	color: var(--text-muted);
-	padding: 5px 11px;
+	padding: 5px 8px;
 	font: var(--font-ui-small);
 	font-weight: 600;
 	cursor: pointer;
@@ -661,6 +942,15 @@
 .pdf-native-annotator-page-list-item:focus-visible,
 .pdf-native-annotator-page-list-item.is-active {
 	background: var(--background-modifier-hover);
+}
+
+.pdf-native-annotator-page-list-item.is-removed .pdf-native-annotator-page-list-thumbnail-sheet {
+	opacity: 0.56;
+	filter: grayscale(0.7);
+}
+
+.pdf-native-annotator-page-list-item.is-removed .pdf-native-annotator-page-list-detail {
+	color: var(--text-faint);
 }
 
 .menu .pdf-native-annotator-page-list-item {
@@ -1395,12 +1685,14 @@
 	padding: 6px 10px;
 	border: 0;
 	background: transparent;
+	background-color: transparent;
 	box-shadow: none;
 	line-height: 1.35;
 	resize: none;
 	overflow: hidden;
 	outline: none;
 	appearance: none;
+	-webkit-appearance: none;
 	white-space: pre-wrap;
 	overflow-wrap: break-word;
 	-webkit-text-fill-color: transparent;
@@ -1449,19 +1741,27 @@
 	}
 }
 
-.pdf-native-annotator-inline-text-handle {
+.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle {
 	position: absolute;
 	width: 12px;
 	height: 12px;
+	min-width: 0;
+	min-height: 0;
 	padding: 0;
 	border: 0;
 	border-radius: 999px;
 	background: transparent;
 	box-shadow: none;
 	appearance: none;
+	-webkit-appearance: none;
+	color: transparent;
+	font-size: 0;
+	line-height: 0;
+	touch-action: none;
+	-webkit-tap-highlight-color: transparent;
 }
 
-.pdf-native-annotator-inline-text-handle::after {
+.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle::after {
 	content: "";
 	position: absolute;
 	left: 50%;
@@ -1564,6 +1864,10 @@
 	pointer-events: none;
 }
 
+.pdf-native-annotator-template-background.pdf-native-annotator-synthetic-background {
+	z-index: 9989;
+}
+
 .pdf-native-annotator-synthetic-background[data-template="ruled"] {
 	background-image: linear-gradient(
 		to bottom,
@@ -1660,6 +1964,55 @@
 	color: var(--color-yellow);
 }
 
+.freedraw-pdf-settings {
+	max-width: 780px;
+}
+
+.freedraw-pdf-settings-intro,
+.freedraw-pdf-settings-section-description {
+	max-width: 68ch;
+	margin: 0 0 var(--size-4-3);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+}
+
+.freedraw-pdf-settings-intro {
+	margin-bottom: var(--size-4-6);
+	color: var(--text-normal);
+}
+
+.freedraw-pdf-settings .setting-item-heading {
+	margin-top: var(--size-4-6);
+}
+
+.freedraw-pdf-settings-advanced {
+	margin-top: var(--size-4-8);
+	border-top: 1px solid var(--background-modifier-border);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.freedraw-pdf-settings-advanced > summary {
+	display: flex;
+	align-items: center;
+	min-height: 44px;
+	color: var(--text-normal);
+	font-weight: var(--font-semibold);
+	cursor: pointer;
+}
+
+.freedraw-pdf-settings-advanced > p {
+	max-width: 68ch;
+	margin: 0 0 var(--size-4-4);
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	line-height: 1.5;
+}
+
+.freedraw-pdf-settings-advanced-body {
+	padding-bottom: var(--size-4-4);
+}
+
 @media (max-width: 960px) {
 	.pdf-native-annotator-ui.is-floating {
 		inset: 8px 8px auto auto;
@@ -1671,5 +2024,203 @@
 
 	.pdf-native-annotator-width input[type="range"] {
 		width: 72px;
+	}
+}
+
+@media (hover: none) and (pointer: coarse) {
+	.pdf-native-annotator-ui.is-floating {
+		inset:
+			max(8px, env(safe-area-inset-top))
+			max(8px, env(safe-area-inset-right))
+			auto
+			max(8px, env(safe-area-inset-left));
+		max-width: calc(100vw - max(16px, env(safe-area-inset-left)) - max(16px, env(safe-area-inset-right)));
+	}
+
+	.pdf-native-annotator-ui.is-inline {
+		min-width: 0;
+		max-width: calc(100vw - max(12px, env(safe-area-inset-left)) - max(12px, env(safe-area-inset-right)));
+		margin-left: 4px;
+		overflow: hidden;
+	}
+
+	.pdf-native-annotator-toolbar,
+	.pdf-native-annotator-ui.is-inline .pdf-native-annotator-toolbar {
+		flex-wrap: nowrap;
+		justify-content: stretch;
+		width: 100%;
+		max-width: 100%;
+		min-width: 0;
+		overflow: hidden;
+		touch-action: manipulation;
+	}
+
+	.pdf-native-annotator-toolbar .pdf-native-annotator-group.is-tools {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow-x: auto;
+		overflow-y: hidden;
+		overscroll-behavior-x: contain;
+		scrollbar-width: none;
+		-webkit-overflow-scrolling: touch;
+		touch-action: pan-x;
+	}
+
+	.pdf-native-annotator-toolbar .pdf-native-annotator-group.is-tools::-webkit-scrollbar {
+		display: none;
+	}
+
+	.pdf-native-annotator-toolbar .pdf-native-annotator-group.is-actions {
+		flex: 0 0 auto;
+		flex-wrap: nowrap;
+		padding-left: 5px;
+		border-left: 1px solid var(--background-modifier-border);
+		background: var(--background-primary);
+	}
+
+	.pdf-native-annotator-button,
+	.pdf-native-annotator-icon-button,
+	.pdf-native-annotator-color-button,
+	.pdf-native-annotator-stroke-button,
+	.pdf-native-annotator-preset {
+		min-width: 44px;
+		height: 44px;
+		min-height: 44px;
+	}
+
+	.pdf-native-annotator-stroke-button {
+		flex: 0 0 auto;
+		min-width: 56px;
+		padding-inline: 8px;
+	}
+
+	.pdf-native-annotator-text-button,
+	.pdf-native-annotator-labeled-icon-button {
+		flex: 0 0 auto;
+		width: max-content;
+		min-width: max-content;
+		padding-inline: 14px;
+		white-space: nowrap;
+	}
+
+	.pdf-native-annotator-icon-button,
+	.pdf-native-annotator-color-button {
+		width: 44px;
+		padding: 0;
+	}
+
+	.pdf-native-annotator-preset {
+		padding-inline: 8px;
+	}
+
+	.pdf-native-annotator-touch-mode-button {
+		min-width: max-content;
+		padding-inline: 16px;
+		white-space: nowrap;
+	}
+
+	.pdf-native-annotator-popover-close,
+	.pdf-native-annotator-swatch,
+	.pdf-native-annotator-page-list-action {
+		width: 44px;
+		height: 44px;
+	}
+
+	.pdf-native-annotator-tool-color-popover .pdf-native-annotator-swatch-inner {
+		flex-basis: 34px;
+		width: 34px;
+		height: 34px;
+		min-width: 34px;
+		min-height: 34px;
+		border-radius: 5px;
+	}
+
+	.pdf-native-annotator-color-button-preview {
+		flex-basis: 24px;
+		width: 24px;
+		height: 24px;
+		min-width: 24px;
+		min-height: 24px;
+	}
+
+	.modal.pdf-native-annotator-color-popover,
+	.modal.pdf-native-annotator-confirm-popover,
+	.modal.pdf-native-annotator-rename-popover,
+	.modal.pdf-native-annotator-font-popover,
+	.modal.pdf-native-annotator-stroke-popover,
+	.modal.pdf-native-annotator-page-list-popover {
+		max-width: calc(100vw - max(24px, env(safe-area-inset-left)) - max(24px, env(safe-area-inset-right)));
+		max-height: calc(100dvh - max(24px, env(safe-area-inset-top)) - max(24px, env(safe-area-inset-bottom)));
+	}
+
+	.modal.pdf-native-annotator-tool-color-popover {
+		width: min(344px, calc(100vw - max(24px, env(safe-area-inset-left)) - max(24px, env(safe-area-inset-right))));
+	}
+
+	.pdf-native-annotator-tool-color-popover .pdf-native-annotator-color-popover-swatches {
+		grid-template-columns: repeat(6, 44px);
+		min-height: 44px;
+	}
+
+	.pdf-native-annotator-font-popover,
+	.pdf-native-annotator-font-popover-list,
+	.pdf-native-annotator-page-list {
+		touch-action: pan-y;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.pdf-native-annotator-font-select,
+	.pdf-native-annotator-case-select,
+	.pdf-native-annotator-font-number-input,
+	.pdf-native-annotator-rename-input {
+		min-height: 44px;
+		font-size: 16px;
+	}
+
+	.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle {
+		width: 24px;
+		height: 24px;
+	}
+
+	.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle.is-nw {
+		left: -12px;
+		top: -12px;
+	}
+
+	.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle.is-n {
+		top: -12px;
+	}
+
+	.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle.is-ne {
+		right: -12px;
+		top: -12px;
+	}
+
+	.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle.is-e {
+		right: -12px;
+	}
+
+	.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle.is-se {
+		right: -12px;
+		bottom: -12px;
+	}
+
+	.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle.is-s {
+		bottom: -12px;
+	}
+
+	.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle.is-sw {
+		left: -12px;
+		bottom: -12px;
+	}
+
+	.pdf-native-annotator-host .pdf-native-annotator-inline-text-handle.is-w {
+		left: -12px;
+	}
+}
+
+@media (hover: none) and (pointer: coarse) and (max-width: 380px) {
+	.pdf-native-annotator-tool-color-popover .pdf-native-annotator-color-popover-swatches {
+		grid-template-columns: repeat(3, 44px);
 	}
 }
