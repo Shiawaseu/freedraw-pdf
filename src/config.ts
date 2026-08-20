@@ -105,7 +105,7 @@ export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
 	showCopyEmbedToolbarButton: false,
 	autoCopyRegionEmbed: true,
 	showAnnotatedEmbedHeader: false,
-	showDrawingNotices: true,
+	showDrawingNotices: false,
 	showRenderTelemetry: false,
 	inkInputPolicy: "allow-touch",
 	livePreviewMode: "quality",
